@@ -3,6 +3,7 @@
 #include "Config.h"
 #include "EngineTimers.h"
 #include "Features.h"
+#include "Localization.h"
 #include "Occlusion.h"
 #include "ShadowCulling.h"
 #include "TextureStream.h"
@@ -30,11 +31,26 @@ namespace Menu
 			return l == "GERMAN";
 		}
 
-		// Bereich im SKSE Menu Framework (links in der Liste)
-		const std::string kSection = "Skyrim Performance Solution/";
+		// Text je nach Sprache; SPS.json (DLL 同目录) 提供简中词条，缺词条或没装则回退德/英
+		const char* T(const char* a_en, const char* a_de) noexcept
+		{
+			if (Localization::Chinese()) {
+				if (const char* zh = Localization::Zh(a_en)) {
+					return zh;
+				}
+			}
+			return g_german ? a_de : a_en;
+		}
 
-		// Text je nach Sprache
-		const char* T(const char* a_en, const char* a_de) noexcept { return g_german ? a_de : a_en; }
+		const char* FeatName(const Features::Entry& a_entry) noexcept
+		{
+			if (Localization::Chinese()) {
+				if (const char* zh = Localization::Zh(a_entry.name.c_str())) {
+					return zh;
+				}
+			}
+			return g_german ? a_entry.nameDe.c_str() : a_entry.name.c_str();
+		}
 
 		void Tip(const char* a_text);
 
@@ -258,7 +274,7 @@ namespace Menu
 														"diese Funktionen wurden abgeschaltet, weil der Spielcode abweicht (siehe SPS.log):")).c_str());
 					for (const auto& e : list) {
 						if (!e.active) {
-							MenuApi::BulletText("%s", (g_german ? e.nameDe : e.name).c_str());
+							MenuApi::BulletText("%s", FeatName(e));
 						}
 					}
 				}
@@ -590,8 +606,14 @@ namespace Menu
 					"Kommt zu 'Frei halten' hinzu. Erst wenn so viel frei ist, werden verkleinerte Texturen wieder voll geladen. Der Abstand verhindert, dass Texturen hin und her wechseln. Die meisten müssen ihn nicht ändern."));
 				// beide Schwellen im Klartext (Regler 2 ist ein Abstand, kein eigener Grenzwert - verwirrte im Test)
 				const auto keep = static_cast<int>(Config::textureStream.reserveMB), refillAt = keep + static_cast<int>(Config::textureStream.refillGapMB);
-				MenuApi::TextWrapped("%s", (g_german ? std::format("Verkleinern, wenn weniger als {} MB frei sind. Wieder voll laden, wenn mehr als {} MB frei sind.", keep, refillAt) :
-				                                       std::format("Downscale when less than {} MB is free. Reload at full size when more than {} MB is free.", keep, refillAt)).c_str());
+				if (Localization::Chinese()) {
+					if (const char* zh = Localization::Zh("Downscale when less than {} MB is free. Reload at full size when more than {} MB is free.")) {
+						MenuApi::TextWrapped("%s", std::vformat(zh, std::make_format_args(keep, refillAt)).c_str());
+					}
+				} else {
+					MenuApi::TextWrapped("%s", (g_german ? std::format("Verkleinern, wenn weniger als {} MB frei sind. Wieder voll laden, wenn mehr als {} MB frei sind.", keep, refillAt) :
+					                                       std::format("Downscale when less than {} MB is free. Reload at full size when more than {} MB is free.", keep, refillAt)).c_str());
+				}
 				MenuApi::TextWrapped("%s", T("Most users only need 'Keep free'. Leave the gap at its default.", "Die meisten brauchen nur 'Frei halten'. Den Abstand am besten auf Standard lassen."));
 			}
 			Slider(T("RAM buffer (MB)##ts", "RAM-Puffer (MB)##ts"), Config::textureStream.ramCacheMB, 0.0f, 8192.0f, "%.0f",
@@ -757,13 +779,15 @@ namespace Menu
 			return;
 		}
 		g_german = IsGerman();
+		// Bereich im SKSE Menu Framework (links in der Liste); erst hier auswerten, dann ist SPS.json schon geladen
+		const std::string kSection = std::string(T("Skyrim Performance Solution", "Skyrim Performance Solution")) + "/";
 		MenuApi::AddSectionItem(kSection + T("Overview", "Übersicht"), RenderOverview);
 		MenuApi::AddSectionItem(kSection + T("Shadows", "Schatten"), RenderShadows);
 		MenuApi::AddSectionItem(kSection + T("Texture streaming", "Textur-Streaming"), RenderTextures);
 		MenuApi::AddSectionItem(kSection + T("Lights and scene", "Licht und Szene"), RenderScene);
 		MenuApi::AddSectionItem(kSection + T("Help with visual issues", "Hilfe bei Bildfehlern"), RenderHelp);
-		MenuApi::AddSectionItem(kSection + "Beta", RenderBeta);
-		MenuApi::AddSectionItem(kSection + "Debug", RenderDebug);
+		MenuApi::AddSectionItem(kSection + T("Beta", "Beta"), RenderBeta);
+		MenuApi::AddSectionItem(kSection + T("Debug", "Debug"), RenderDebug);
 		logger::info("Menu registered in SKSE Menu Framework (version {:.1f})", MenuApi::Version());
 	}
 }

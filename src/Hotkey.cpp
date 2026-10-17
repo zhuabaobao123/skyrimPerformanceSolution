@@ -1,6 +1,7 @@
 #include "Hotkey.h"
 
 #include "Config.h"
+#include "Localization.h"
 #include "Menu.h"
 
 namespace Hotkey
@@ -45,8 +46,14 @@ namespace Hotkey
 				Config::masterEnabled.store(enabled, std::memory_order_relaxed);
 				logger::info("Hotkey: optimizations {}", enabled ? "ON" : "OFF");
 				const bool de = Menu::IsGerman();
-				RE::SendHUDMessage::ShowHUDMessage(enabled ? (de ? "SPS: Optimierungen AN" : "SPS: optimizations ON") :
-				                                             (de ? "SPS: Optimierungen AUS" : "SPS: optimizations OFF"));
+				const char* msg = de ? (enabled ? "SPS: Optimierungen AN" : "SPS: Optimierungen AUS") :
+				                       (enabled ? "SPS: optimizations ON" : "SPS: optimizations OFF");
+				if (Localization::Chinese()) {
+					if (const char* zh = Localization::Zh(enabled ? "SPS: optimizations ON" : "SPS: optimizations OFF")) {
+						msg = zh;
+					}
+				}
+				RE::SendHUDMessage::ShowHUDMessage(msg);
 			}
 		};
 	}

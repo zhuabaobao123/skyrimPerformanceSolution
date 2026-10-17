@@ -4,6 +4,7 @@
 #include "EngineTimers.h"
 #include "LightGather.h"
 #include "LightShadowCache.h"
+#include "Localization.h"
 #include "Menu.h"
 #include "Config.h"
 #include "Features.h"
@@ -53,6 +54,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 	info.trampoline = true;
 	info.trampolineSize = 256;
 	SKSE::Init(a_skse, info);
+	Localization::Load();
 
 	#ifdef TRACY_ENABLE
 	logger::info("SPS {} loaded (developer build with Tracy profiler)", SPS_VERSION);
@@ -99,8 +101,15 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 		logger::error("SkyrimPerf.dll (old name) is also loaded - SPS stays inactive. Please remove the old mod.");
 		SKSE::GetMessagingInterface()->RegisterListener([](SKSE::MessagingInterface::Message* a_msg) {
 			if (a_msg->type == SKSE::MessagingInterface::kDataLoaded) {
-				RE::DebugMessageBox(Menu::IsGerman() ? "Skyrim Performance Solution: Die alte Version (SkyrimPerf) ist noch installiert. Bitte entfernen - SPS bleibt bis dahin inaktiv." :
-				                                       "Skyrim Performance Solution: the old version (SkyrimPerf) is still installed. Please remove it - SPS stays inactive until then.");
+				const char* text = Menu::IsGerman() ?
+					"Skyrim Performance Solution: Die alte Version (SkyrimPerf) ist noch installiert. Bitte entfernen - SPS bleibt bis dahin inaktiv." :
+					"Skyrim Performance Solution: the old version (SkyrimPerf) is still installed. Please remove it - SPS stays inactive until then.";
+				if (Localization::Chinese()) {
+					if (const char* zh = Localization::Zh("Skyrim Performance Solution: the old version (SkyrimPerf) is still installed. Please remove it - SPS stays inactive until then.")) {
+						text = zh;
+					}
+				}
+				RE::DebugMessageBox(text);
 			}
 		});
 		return true;
