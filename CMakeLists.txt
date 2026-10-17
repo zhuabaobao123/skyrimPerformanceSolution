@@ -43,6 +43,7 @@ add_commonlibsse_plugin(
 		src/EngineTimers.cpp
 		src/TextureStream.cpp
 		src/Menu.cpp
+		src/Localization.cpp
 		src/Config.cpp
 		src/DetourHelper.cpp
 		src/GpuMemory.cpp
