@@ -1,4 +1,5 @@
 #include "ShadowCulling.h"
+#include "VfuncHook.h"
 #include "Features.h"
 
 #include "Config.h"
@@ -730,6 +731,24 @@ namespace ShadowCulling
 
 		// Markierung: Main::RenderDepth laeuft (Render-Thread = Main-Thread)
 		std::atomic<bool> g_inDepthPrepass{ false };
+		// Markierung: Main::RenderWorld laeuft (Hauptbild, Main-Thread) - Bereich des Draw-Filters der Verdeckung
+		std::atomic<bool> g_inMainWorld{ false };
+		bool              g_mainWorldHooked = false;
+
+		// Main::RenderWorld (AE 107142), aufgerufen aus AE 36559+0x841 / SE 35560+0x831 - dieselbe Stelle haengt Community
+		// Shaders ein (Main_RenderWorld); write_call verkettet hinter dem dort eingetragenen Ziel
+		struct MainRenderWorld
+		{
+			static void thunk(bool a_arg)
+			{
+				g_drawFilterScopes.fetch_add(1, std::memory_order_relaxed);
+				g_inMainWorld.store(true, std::memory_order_relaxed);
+				func(a_arg);
+				g_inMainWorld.store(false, std::memory_order_relaxed);
+				g_drawFilterScopes.fetch_sub(1, std::memory_order_relaxed);
+			}
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
 
 		struct RenderDepth
 		{
@@ -970,6 +989,10 @@ namespace ShadowCulling
 					}
 					// Teile an Figuren (Waffen, Schilde, Trommel auf dem Ruecken) bewegen sich mit der Animation -> nie weglassen
 					if (Occlusion::CountMain(*a_geometry, a_accumulator, draws) && !BelongsToActorNode(a_geometry)) {
+						if (Config::occlDrawFilter.load(std::memory_order_relaxed) && g_mainWorldHooked) {
+							Occlusion::MarkHidden(a_geometry);  // normal anmelden, erst beim Draw im Hauptbild weglassen
+							return passes;
+						}
 						empty.head = nullptr;
 						return &empty;
 					}
@@ -1219,11 +1242,11 @@ namespace ShadowCulling
 	void Install()
 	{
 		REL::Relocation<std::uintptr_t> vtbl{ RE::VTABLE_BSCullingProcess[0] };
-		AppendVirtual::func = vtbl.write_vfunc(0x18, AppendVirtual::thunk);
+		VfuncHook::Write(vtbl, 0x18, AppendVirtual::thunk, AppendVirtual::func);
 		logger::info("Hook installed: BSCullingProcess::AppendVirtual (vfunc 0x18)");
 
 		REL::Relocation<std::uintptr_t> parabolicVtbl{ RE::VTABLE_BSParabolicCullingProcess[0] };
-		AppendVirtualParabolic::func = parabolicVtbl.write_vfunc(0x18, AppendVirtualParabolic::thunk);
+		VfuncHook::Write(parabolicVtbl, 0x18, AppendVirtualParabolic::thunk, AppendVirtualParabolic::func);
 		logger::info("Hook installed: BSParabolicCullingProcess::AppendVirtual (vfunc 0x18)");
 #ifdef SPS_VR
 		// VR: nur das Culling einzelner Meshes (AppendVirtual, vtable-Eintrag offline gegen VR 1.4.15 verglichen: gleich).
@@ -1234,20 +1257,36 @@ namespace ShadowCulling
 
 		// Teilbaeume ueberspringen: Process (vfunc 0x16) der drei Culler-Arten
 		REL::Relocation<std::uintptr_t> geomListVtbl{ RE::VTABLE_BSGeometryListCullingProcess[0] };
-		Process<0, false>::func = vtbl.write_vfunc(0x16, Process<0, false>::thunk);
-		Process<1, true>::func = parabolicVtbl.write_vfunc(0x16, Process<1, true>::thunk);
-		Process<2, false>::func = geomListVtbl.write_vfunc(0x16, Process<2, false>::thunk);
+		VfuncHook::Write(vtbl, 0x16, Process<0, false>::thunk, Process<0, false>::func);
+		VfuncHook::Write(parabolicVtbl, 0x16, Process<1, true>::thunk, Process<1, true>::func);
+		VfuncHook::Write(geomListVtbl, 0x16, Process<2, false>::thunk, Process<2, false>::func);
 		logger::info("Hook installed: Process (vfunc 0x16) for BSCullingProcess, BSParabolicCullingProcess, BSGeometryListCullingProcess");
 	}
 
 	void InstallLate()
 	{
 		REL::Relocation<std::uintptr_t> vtbl{ RE::VTABLE_BSLightingShaderProperty[0] };
-		OcclusionRenderPasses::func = vtbl.write_vfunc(0x2D, OcclusionRenderPasses::thunk);
-		LightingRenderPasses::func = vtbl.write_vfunc(0x2A, LightingRenderPasses::thunk);
+		VfuncHook::Write(vtbl, 0x2D, OcclusionRenderPasses::thunk, OcclusionRenderPasses::func);
+		VfuncHook::Write(vtbl, 0x2A, LightingRenderPasses::thunk, LightingRenderPasses::func);
 		logger::info("Hook installed: BSLightingShaderProperty::GetRenderPasses (vfunc 0x2A, after Community Shaders)");
 		logger::info("Hook installed: BSLightingShaderProperty::GetRenderPasses_Occlusion (vfunc 0x2D, after Community Shaders)");
 
+#ifndef SPS_VR
+		// Hauptbild-Bereich fuer den Draw-Filter der Verdeckung. Original zuerst merken, dann den Aufruf umschreiben
+		// (sonst koennte ein Aufruf dazwischen ins Leere springen, vgl. VfuncHook)
+		{
+			const REL::Relocation<std::uintptr_t> site{ RELOCATION_ID(35560, 36559), REL::Relocate(0x831, 0x841) };
+			if (Features::IsCall(site.address())) {
+				MainRenderWorld::func = site.address() + 5 + *reinterpret_cast<const std::int32_t*>(site.address() + 1);
+				std::atomic_thread_fence(std::memory_order_seq_cst);
+				SKSE::GetTrampoline().write_call<5>(site.address(), MainRenderWorld::thunk);
+				g_mainWorldHooked = true;
+				logger::info("Hook installed: Main::RenderWorld call site - hide occluded objects at draw time");
+			} else {
+				logger::warn("Hide occluded objects: Main::RenderWorld call site differs - hiding at collection (old way)");
+			}
+		}
+#endif
 		// Main::RenderDepth wird nur indirekt aufgerufen (kein direkter call/jmp im Spielcode). Community Shaders leitet den
 		// Funktionsanfang per Detours um; Detours verkettet einen weiteren Hook sauber dahinter.
 		RenderDepth::func = reinterpret_cast<void (*)(bool, bool)>(REL::Relocation<std::uintptr_t>{ RELOCATION_ID(100421, 107139) }.address());
@@ -1260,6 +1299,18 @@ namespace ShadowCulling
 	}
 
 	bool InDepthPrepass() noexcept { return g_inDepthPrepass.load(std::memory_order_relaxed); }
+
+	bool SkipHiddenMainDraw(const RE::BSRenderPass& a_pass) noexcept
+	{
+		if (!a_pass.geometry || !(g_inMainWorld.load(std::memory_order_relaxed) || g_inDepthPrepass.load(std::memory_order_relaxed))) {
+			return false;
+		}
+		if (Occlusion::IsHidden(a_pass.geometry)) {
+			Occlusion::CountFilterSkip();
+			return true;
+		}
+		return false;
+	}
 
 	bool IsMainViewAccumulator(const void* a_accumulator) noexcept { return IsMainWorldAccumulator(a_accumulator); }
 
