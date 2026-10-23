@@ -103,6 +103,8 @@
   "Hidden in images in a row##occ": "需连续遮挡的帧数##occ",
   "How many depth images in a row an object must be hidden before it is left out. 1 = immediately. Default 2.": "物体需要连续在多少张深度图里被判定为遮挡才被剔除。1 = 立即剔除。默认 2。",
   "Max. size on screen (tiles)##occ": "屏幕最大尺寸（图块）##occ",
+  "Hide at draw time##occ": "绘制时隐藏##occ",
+  "Hidden objects are set up by the game as usual and only their draws are skipped. Off = old way (not drawn at all), only for comparison. Not saved.": "被隐藏的物体仍由游戏照常注册，只跳过其绘制调用。关闭 = 旧方式（完全不绘制），仅供对比。不保存。",
   "Larger objects are not checked (the whole image has 36864 tiles). Higher = big objects like houses can be left out too, the check costs a bit more. Default 4096.": "比这更大的物体不参与判定（整张图共 36864 个图块）。数值越高，房屋等大物体也可能被剔除，检查开销也略增。默认 4096。",
   "Never hide characters##occ": "永不剔除人物##occ",
   "Characters and other animated meshes are never left out (their bounds lag behind the animation). Default on.": "人物及其他动画网格永不剔除（它们的包围盒会滞后于动画）。默认开启。",
