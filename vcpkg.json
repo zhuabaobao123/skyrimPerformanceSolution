@@ -3,7 +3,7 @@
   "name": "skyrim-perf",
   "version-semver": "1.0.66",
   "description": "SKSE-Profiling-Plugin (Tracy + Frame-Statistik) fuer Skyrim AE",
-  "builtin-baseline": "3cd21e48a75f67acfef289da52893ce79144aaa1",
+  "builtin-baseline": "b8b8df2201ad8509b81a830fe0957bcb98e06c27",
   "dependencies": [
     "detours",
     "directxmath",

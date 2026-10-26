@@ -48,10 +48,8 @@ namespace Hotkey
 				const bool de = Menu::IsGerman();
 				const char* msg = de ? (enabled ? "SPS: Optimierungen AN" : "SPS: Optimierungen AUS") :
 				                       (enabled ? "SPS: optimizations ON" : "SPS: optimizations OFF");
-				if (Localization::Chinese()) {
-					if (const char* zh = Localization::Zh(enabled ? "SPS: optimizations ON" : "SPS: optimizations OFF")) {
-						msg = zh;
-					}
+				if (const char* text = Localization::Lookup(enabled ? "SPS: optimizations ON" : "SPS: optimizations OFF")) {
+					msg = text;
 				}
 				RE::SendHUDMessage::ShowHUDMessage(msg);
 			}

@@ -105,10 +105,8 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 				const char* text = Menu::IsGerman() ?
 					"Skyrim Performance Solution: Die alte Version (SkyrimPerf) ist noch installiert. Bitte entfernen - SPS bleibt bis dahin inaktiv." :
 					"Skyrim Performance Solution: the old version (SkyrimPerf) is still installed. Please remove it - SPS stays inactive until then.";
-				if (Localization::Chinese()) {
-					if (const char* zh = Localization::Zh("Skyrim Performance Solution: the old version (SkyrimPerf) is still installed. Please remove it - SPS stays inactive until then.")) {
-						text = zh;
-					}
+				if (const char* localized = Localization::Lookup("Skyrim Performance Solution: the old version (SkyrimPerf) is still installed. Please remove it - SPS stays inactive until then.")) {
+					text = localized;
 				}
 				RE::DebugMessageBox(text);
 			}
