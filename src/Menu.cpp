@@ -31,23 +31,19 @@ namespace Menu
 			return l == "GERMAN";
 		}
 
-		// Text je nach Sprache; SPS.json (DLL 同目录) 提供简中词条，缺词条或没装则回退德/英
+		// Text je nach Sprache; SPS.json (DLL 同目录) 提供当前语言包词条，缺词条或没装则回退德/英
 		const char* T(const char* a_en, const char* a_de) noexcept
 		{
-			if (Localization::Chinese()) {
-				if (const char* zh = Localization::Zh(a_en)) {
-					return zh;
-				}
+			if (const char* text = Localization::Lookup(a_en)) {
+				return text;
 			}
 			return g_german ? a_de : a_en;
 		}
 
 		const char* FeatName(const Features::Entry& a_entry) noexcept
 		{
-			if (Localization::Chinese()) {
-				if (const char* zh = Localization::Zh(a_entry.name.c_str())) {
-					return zh;
-				}
+			if (const char* text = Localization::Lookup(a_entry.name.c_str())) {
+				return text;
 			}
 			return g_german ? a_entry.nameDe.c_str() : a_entry.name.c_str();
 		}
@@ -615,10 +611,8 @@ namespace Menu
 					"Kommt zu 'Frei halten' hinzu. Erst wenn so viel frei ist, werden verkleinerte Texturen wieder voll geladen. Der Abstand verhindert, dass Texturen hin und her wechseln. Die meisten müssen ihn nicht ändern."));
 				// beide Schwellen im Klartext (Regler 2 ist ein Abstand, kein eigener Grenzwert - verwirrte im Test)
 				const auto keep = static_cast<int>(Config::textureStream.reserveMB), refillAt = keep + static_cast<int>(Config::textureStream.refillGapMB);
-				if (Localization::Chinese()) {
-					if (const char* zh = Localization::Zh("Downscale when less than {} MB is free. Reload at full size when more than {} MB is free.")) {
-						MenuApi::TextWrapped("%s", std::vformat(zh, std::make_format_args(keep, refillAt)).c_str());
-					}
+				if (const char* localized = Localization::Lookup("Downscale when less than {} MB is free. Reload at full size when more than {} MB is free.")) {
+					MenuApi::TextWrapped("%s", std::vformat(localized, std::make_format_args(keep, refillAt)).c_str());
 				} else {
 					MenuApi::TextWrapped("%s", (g_german ? std::format("Verkleinern, wenn weniger als {} MB frei sind. Wieder voll laden, wenn mehr als {} MB frei sind.", keep, refillAt) :
 					                                       std::format("Downscale when less than {} MB is free. Reload at full size when more than {} MB is free.", keep, refillAt)).c_str());

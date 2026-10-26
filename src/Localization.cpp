@@ -70,12 +70,7 @@ namespace Localization
 		s_ready.store(true, std::memory_order_release);
 	}
 
-	bool Chinese() noexcept
-	{
-		return s_ready.load(std::memory_order_acquire) && !s_map.empty();
-	}
-
-	const char* Zh(const char* a_key) noexcept
+	const char* Lookup(const char* a_key) noexcept
 	{
 		if (!a_key || !s_ready.load(std::memory_order_acquire)) {
 			return nullptr;
