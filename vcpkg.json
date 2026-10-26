@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
   "name": "skyrim-perf",
-  "version-semver": "1.0.65",
+  "version-semver": "1.0.66",
   "description": "SKSE-Profiling-Plugin (Tracy + Frame-Statistik) fuer Skyrim AE",
   "builtin-baseline": "3cd21e48a75f67acfef289da52893ce79144aaa1",
   "dependencies": [
