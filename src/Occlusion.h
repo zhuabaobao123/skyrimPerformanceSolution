@@ -29,6 +29,23 @@ namespace Occlusion
 	// Ladebildschirm / Hauptmenue
 	void Reset() noexcept;
 
+	// Tuer wird aktiviert / oeffnet oder schliesst sich: fuer a_seconds als bewegtes Objekt aus dem alten Tiefenbild nehmen
+	void NoteDoorMoving(RE::TESObjectREFR* a_door, float a_seconds) noexcept;
+
+	// Kamera des Frames steht fest (nach UpdateCamera der Sonne, Main-Thread): Pyramide im Hilfsthread anstossen
+	void OnViewCamera() noexcept;
+
+	// Main::Begin im Hauptbild (vor den Sammel-Jobs, Kamera steht fest): Pyramide so frueh wie moeglich anstossen
+	void OnFrameBegin() noexcept;
+	void SetFrameBeginHooked() noexcept;  // Main::Begin-Hook installiert: Bilder dort zaehlen statt am Present
+
+	// Bottled Shaders mit eigener HiZ-Verdeckung erkennen (Daten geladen, Ladebildschirm)
+	void DetectOtherCullers() noexcept;
+	bool BottledHiZActive() noexcept;
+	bool BottledInstalled() noexcept;
+	// Schatten-Cache fester Lichter wegen Bottled Shaders aus (Flackern in Innenraeumen, nicht erlaubt)
+	bool BottledBlocksLightCache() noexcept;
+
 	// Debug: beim naechsten Frame das aktuelle Tiefenbild als Bild in den SKSE-Log-Ordner schreiben
 	void RequestDepthDump() noexcept;
 }

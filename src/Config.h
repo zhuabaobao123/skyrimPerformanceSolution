@@ -8,12 +8,12 @@ namespace Config
 	inline bool                       engineProbes = false;  // nur INI, nur beim Start: WaitProbe + Engine-Zeitmessung (Entwickler)
 	inline std::atomic<bool>          analysis{ false };  // Diagnose-Auswertungen (Instancing-Analyse, Decal-/Culled-Listen, Kamera-Zaehler). Kosten Hauptthread-Zeit -> Standard AUS
 	inline std::atomic<std::uint32_t> toggleKey{ 0xC9 };  // DirectInput-Scancode, 0xC9 = Bild auf (Page Up)
-	// Verdeckte Objekte weglassen (Beta, Standard AUS). [Occlusion] bCull und die Stellschrauben werden im Menue
+	// Verdeckte Objekte weglassen (seit 1.0.68 Standard AN, vorher Beta). [Occlusion] bCull und die Stellschrauben werden im Menue
 	// gespeichert. Messen und Tiefenquelle (0 = Kopie nach dem Tiefenvorpass, 1 = Haupt-Tiefenpuffer) sind Diagnose
 	// auf der Debug-Seite, nur fuer die laufende Sitzung.
 	inline std::atomic<bool>          occlusionProbe{ false };
 	inline std::atomic<std::uint32_t> occlusionDepthSource{ 0 };
-	inline std::atomic<bool>          occlusionCull{ false };
+	inline std::atomic<bool>          occlusionCull{ true };
 	inline std::atomic<float>         occlTurnDeg{ 2.0f };       // Weglassen pausiert ab dieser Drehung seit dem Tiefenbild
 	inline std::atomic<float>         occlMoveUnits{ 64.0f };    // ... oder ab dieser Bewegung
 	inline std::atomic<float>         occlMarginPct{ 2.0f };     // Sicherheitsabstand hinter der Verdeckung in %
@@ -21,6 +21,12 @@ namespace Config
 	inline std::atomic<std::uint32_t> occlStreak{ 2 };           // so viele Tiefenbilder hintereinander verdeckt
 	inline std::atomic<std::uint32_t> occlMaxTiles{ 4096 };      // groessere Objekte werden nicht geprueft
 	inline std::atomic<bool>          occlSkipSkinned{ true };   // Figuren nie weglassen
+	// Tiefenbild in die Kamera des aktuellen Frames umrechnen (Hi-Z-Pyramide, Hilfsthread): weglassen auch beim Drehen und
+	// Laufen. false = alter Weg (Kachel-Scan im alten Bild, Pause ab occlTurnDeg/occlMoveUnits)
+	inline std::atomic<bool>          occlReproject{ true };
+	// Bottled Shaders hat eine eigene HiZ-Verdeckung - beide zusammen pruefen jedes Objekt doppelt. Ist sie aktiv, bleibt
+	// unsere aus, ausser hier erlaubt.
+	inline std::atomic<bool>          occlAllowWithBottled{ false };
 	// Verdeckte Objekte erst beim einzelnen Draw des Hauptbilds weglassen (1.0.65). Bis 1.0.64 meldete SPS sie gar nicht erst
 	// beim Spiel an (leere Pass-Liste) - Verdacht auf den Licht-Absturz bei Markarth (Nexus). false = alter Weg (nur Vergleich)
 	inline std::atomic<bool>          occlDrawFilter{ true };
@@ -85,7 +91,11 @@ namespace Config
 	// fernen Kaskade einmal je Ausrichtung zeichnen und zwischenspeichern, sonst nur Figuren/Bewegliches
 	struct FarShadowCache
 	{
-		bool enabled = false;  // Standard AUS (BETA)
+		bool enabled = false;           // Standard AUS (optional)
+		bool allowWithBottled = false;  // trotz Bottled Shaders (sonst aus, wie der Licht-Cache)
+		// Baeume im Wind ab dieser Entfernung wie Unbewegliches zwischenspeichern (0 = nie). Test 1.0.71 im Wald: fast alle
+		// Baeume der fernen Kaskade stehen weiter als 4000 Einheiten, wo Skyrim sie nicht mehr bewegt; selbst 250 ohne Fehler
+		float treeStillFrom = 2000.0f;
 	};
 	inline FarShadowCache farShadowCache;  // [FarShadowCache]
 
@@ -118,7 +128,7 @@ namespace Config
 	// Schatten mehr. Weggelassen wird erst beim einzelnen Schatten-Draw (eingesammelt wird alles) - nur AE.
 	struct ActorPartShadowCulling
 	{
-		bool  enabled = false;        // BETA, Standard AUS
+		bool  enabled = true;         // seit 1.0.69 Standard AN
 		float maxRadius = 8.0f;       // nur Teile mit kleinerem Begrenzungsradius (Einheiten)
 		float minDistance = 500.0f;   // ab dieser Entfernung zur Kamera (~7 m)
 	};
@@ -180,6 +190,9 @@ namespace Config
 	{
 		bool  enabled = true;   // 1.0.51-1.0.57 Beta/aus (Pulsieren mit Lux, behoben 1.0.56); Drachenfeste A/B: mit Verdeckung ~1 ms
 		float debugMode = 0;    // Pruef-Modus: 1 nie neu aufbauen, 2 Aufbau ohne Vorframe-Karte, 3 zurueckkopieren + alles zeichnen
+		// Mit Bottled Shaders flackerten Schatten in Innenraeumen (Nexus jimb111, 1.0.68: nur dieser Schalter) - dort aus,
+		// ausser hier erlaubt
+		bool allowWithBottled = false;
 	};
 	inline LightShadowCache lightShadowCache;  // [LightShadowCache]
 

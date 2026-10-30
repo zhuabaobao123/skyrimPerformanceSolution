@@ -15,6 +15,7 @@
 
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace ShadowCulling
 {
@@ -321,6 +322,11 @@ namespace ShadowCulling
 		int                           g_farDrawMode = 0;  // FarMode waehrend die ferne Kaskade gezeichnet wird (sonst 0)
 		std::atomic<std::uint64_t>    g_farSkippedStatic{ 0 };
 		bool                          FarDynamic(const RE::BSGeometry& a_geom) noexcept;  // Figuren, Angehaengtes, Effekte (weiter unten)
+		// Baeume im Wind: ab dieser Entfernung im Fernschatten-Cache als unbeweglich behandeln (0 = nie). Skyrim bewegt Baeume
+		// nur in der Naehe, weiter weg stehen sie still - im Wald sind sie fast alle Schattenwerfer der fernen Kaskade (Test
+		// 1.0.71: ~130 Baum-Draws je Bild, fast alle weiter als 4000). Aus SPS.ini (fTreesStillFrom), Debug-Seite ueberschreibt.
+		std::atomic<float>                         g_farTreeStatic{ 2000.0f };
+		std::array<std::atomic<std::uint64_t>, 4>  g_farTreeBands{};  // Baum-Draws der fernen Kaskade nach Entfernung (Analyse)
 		RE::BSShadowDirectionalLight* g_cacheLight = nullptr;                              // Licht des laufenden Frames (Main-Thread)
 
 		struct Projection
@@ -421,6 +427,17 @@ namespace ShadowCulling
 		// (Wegweiser direkt neben dem Feuer im Pavillon vor Weisslauf). Die Schattenkamera steht im Licht.
 		constexpr float kNearLightAngular = 0.1f;
 		// Punktlicht-Culling an? Vor NearPointLight/PointShadowScale pruefen (beide rechnen je Mesh)
+		// Punktlicht-Schatten koennen einzeln beim Draw der Karte weggelassen werden (nur AE: Hook ID 107604+0x167 und
+		// RenderPassImmediately). Sonst bleibt es beim Weglassen beim Einsammeln wie bis 1.0.68.
+		bool PointDrawFilterReady() noexcept
+		{
+#ifdef SPS_VR
+			return false;
+#else
+			return LightShadowCache::DrawFilterReady();
+#endif
+		}
+
 		bool PointCullOn() noexcept
 		{
 			return Config::pointLightCulling.enabled && Config::masterEnabled.load(std::memory_order_relaxed);
@@ -603,6 +620,25 @@ namespace ShadowCulling
 		// Letzte Entscheidung je Figur (Hysterese). Kleine Tabelle mit atomaren Eintraegen (Zeiger | weggelassen-Bit), da
 		// die Culling-Jobs parallel laufen; Kollisionen kosten nur die Hysterese, nie die Korrektheit.
 		std::array<std::atomic<std::uintptr_t>, 512> g_actorShadowState{};
+		std::array<std::atomic<std::uintptr_t>, 512> g_actorPartState{};  // dasselbe fuer kleine Figurenteile
+
+		// Figur weiter als a_minDistance von der Kamera (Position der Figur, nicht des Meshs)? Mit Hysterese: zurueck erst
+		// unter 90 % davon.
+		bool ActorBeyond(const RE::TESObjectREFR& a_actor, float a_minDistance, std::array<std::atomic<std::uintptr_t>, 512>& a_table) noexcept
+		{
+			const auto  pos = a_actor.GetPosition();
+			const float dx = pos.x - g_camX.load(std::memory_order_relaxed);
+			const float dy = pos.y - g_camY.load(std::memory_order_relaxed);
+			const float dz = pos.z - g_camZ.load(std::memory_order_relaxed);
+			const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+			const auto  key = reinterpret_cast<std::uintptr_t>(&a_actor) & ~std::uintptr_t{ 1 };
+			auto&       slot = a_table[(key >> 4) % a_table.size()];
+			const auto  prev = slot.load(std::memory_order_relaxed);
+			const bool  wasCulled = (prev & ~std::uintptr_t{ 1 }) == key && (prev & 1) != 0;
+			const bool  cull = dist > (wasCulled ? 0.9f * a_minDistance : a_minDistance);
+			slot.store(key | (cull ? 1 : 0), std::memory_order_relaxed);
+			return cull;
+		}
 
 		// Bis 1.0.59 je Mesh mit dessen eigener Entfernung entschieden: an der Grenze fielen einzelne Koerperteile weg,
 		// durch Animation pendelten sie hin und her (fernes NPC-Schatten-Flackern). Jetzt je Figur (Position der Figur)
@@ -626,17 +662,7 @@ namespace ShadowCulling
 				Stats::Count(Stats::Counter::ActorShadowKept);
 				return false;
 			}
-			const auto  pos = actor->GetPosition();
-			const float dx = pos.x - g_camX.load(std::memory_order_relaxed);
-			const float dy = pos.y - g_camY.load(std::memory_order_relaxed);
-			const float dz = pos.z - g_camZ.load(std::memory_order_relaxed);
-			const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
-			const auto  key = reinterpret_cast<std::uintptr_t>(actor) & ~std::uintptr_t{ 1 };
-			auto&       slot = g_actorShadowState[(key >> 4) % g_actorShadowState.size()];
-			const auto  prev = slot.load(std::memory_order_relaxed);
-			const bool  wasCulled = (prev & ~std::uintptr_t{ 1 }) == key && (prev & 1) != 0;
-			const bool  cull = dist > (wasCulled ? backDist : cfg.minDistance);
-			slot.store(key | (cull ? 1 : 0), std::memory_order_relaxed);
+			const bool cull = ActorBeyond(*actor, cfg.minDistance, g_actorShadowState);
 			Stats::Count(cull ? Stats::Counter::ActorShadowCulled : Stats::Counter::ActorShadowKept);
 			return cull;
 		}
@@ -655,6 +681,46 @@ namespace ShadowCulling
 				++i;
 			}
 			return i;
+		}
+
+		// Mikro-Culling: Groesse auf dem Bildschirm statt nur Winkel - Sichtfeld (Zoom beim Bogen, eigenes FOV) und
+		// Aufloesung gehen ein (Review 1.0.69: beim Zielen ploppten Objekte auf). 1 = Bezug 1080p bei 80 Grad horizontal.
+		std::atomic<float> g_mainViewScale{ 1.0f };
+		// Hysterese je Mesh: weggelassen bleibt es, bis es 15 % groesser erscheint (sonst Flackern an der Grenze)
+		std::array<std::atomic<std::uintptr_t>, 4096> g_microState{};
+
+		void UpdateMainViewScale() noexcept
+		{
+			float scale = 1.0f;
+			if (const auto cam = RE::Main::WorldRootCamera()) {
+				const auto& fr = cam->GetRuntimeData2().viewFrustum;
+				const float halfH = 0.5f * (fr.fTop - fr.fBottom);  // tan(halbes vertikales Sichtfeld)
+				if (halfH > 0.01f && halfH < 10.0f) {
+					scale = 0.472f / halfH;  // 80 Grad horizontal bei 16:9
+				}
+			}
+			if (const auto gs = RE::BSGraphics::State::GetSingleton(); gs && gs->screenHeight > 0) {
+				scale *= static_cast<float>(gs->screenHeight) / 1080.0f;
+			}
+			g_mainViewScale.store(std::clamp(scale, 0.25f, 8.0f), std::memory_order_relaxed);
+		}
+
+		bool MicroCull(const RE::BSGeometry& a_geom) noexcept
+		{
+			const auto& rule = Config::mainViewCulling;
+			if (!rule.enabled) {
+				return false;
+			}
+			const auto key = reinterpret_cast<std::uintptr_t>(&a_geom) & ~std::uintptr_t{ 1 };
+			auto&      slot = g_microState[(key >> 4) % g_microState.size()];
+			const auto prev = slot.load(std::memory_order_relaxed);
+			const bool wasCulled = (prev & ~std::uintptr_t{ 1 }) == key && (prev & 1) != 0;
+			const float scale = g_mainViewScale.load(std::memory_order_relaxed) * (wasCulled ? 1.0f / 1.15f : 1.0f);
+			const bool cull = ShouldCull(rule, a_geom, UINT32_MAX, scale);
+			if (cull != wasCulled || (prev & ~std::uintptr_t{ 1 }) != key) {
+				slot.store(key | (cull ? 1 : 0), std::memory_order_relaxed);
+			}
+			return cull;
 		}
 
 		// Hauptszene: Decal-Culling (Laub, Schmutz, Fussabdruecke, Blut) und optionales Mikro-Culling winziger Objekte.
@@ -679,7 +745,7 @@ namespace ShadowCulling
 				}
 				Stats::Count(Stats::Counter::DecalKept);
 			}
-			if (ShouldCull(Config::mainViewCulling, a_geom, UINT32_MAX)) {
+			if (MicroCull(a_geom)) {
 				Stats::Count(Stats::Counter::MainCulled);
 				return true;
 			}
@@ -708,14 +774,18 @@ namespace ShadowCulling
 					Stats::Count(cascade == 0 ? Stats::Counter::SunCascade0 : cascade == 1 ? Stats::Counter::SunCascade1 : Stats::Counter::SunCascade2Plus);
 					break;
 				case Kind::kPoint:
-					if (CullActorShadow(a_visible, true)) {
-						return;
-					}
-					// minCascade gilt nur fuer die Sonne -> hier Kaskade als "hinreichend gross" uebergeben
-					if (g_pointCullAllowed.load(std::memory_order_relaxed) && PointCullOn() && !NearPointLight(a_this->camera, a_visible) &&
-						ShouldCull(Config::pointLightCulling, a_visible, UINT32_MAX, PointShadowScale(cascade, a_visible))) {
-						Stats::Count(Stats::Counter::PointCulled);
-						return;
+					// Fackelschatten-Regeln (kleine Objekte, ferne Figuren) seit 1.0.69 erst beim Draw der Schattenkarte
+					// (SkipPointShadowDraw): beim Einsammeln nahm das Weglassen dem Objekt auch das Licht der Fackel. Ohne
+					// Draw-Hook (SE, VR, andere Aufrufstelle) wie bisher hier.
+					if (!PointDrawFilterReady()) {
+						if (CullActorShadow(a_visible, true)) {
+							return;
+						}
+						if (g_pointCullAllowed.load(std::memory_order_relaxed) && PointCullOn() && !NearPointLight(a_this->camera, a_visible) &&
+							ShouldCull(Config::pointLightCulling, a_visible, UINT32_MAX, PointShadowScale(cascade, a_visible))) {
+							Stats::Count(Stats::Counter::PointCulled);
+							return;
+						}
 					}
 					Stats::Count(Stats::Counter::PointKept);
 					RecordPointMesh(cascade, a_visible);
@@ -741,6 +811,7 @@ namespace ShadowCulling
 		{
 			static void thunk(bool a_arg)
 			{
+				ZoneScopedN("Hauptbild zeichnen");  // inkl. Draw-Filter (verdeckt, winzig, Bodendetails)
 				g_drawFilterScopes.fetch_add(1, std::memory_order_relaxed);
 				g_inMainWorld.store(true, std::memory_order_relaxed);
 				func(a_arg);
@@ -750,10 +821,27 @@ namespace ShadowCulling
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
 
+		// Main::Begin (AE 36561 / SE 35562), aufgerufen aus AE 36559 / SE 35560 +0xD3: vor dem Einreihen der Sammel-Jobs des
+		// Hauptbilds, die Kamera des Frames steht fest (Stelle von Faster Objects uebernommen). Rueckgabe unveraendert
+		// durchreichen - der Aufrufer nutzt RAX spaeter weiter.
+		struct MainBegin
+		{
+			static std::uint64_t thunk(std::uint64_t a_1, std::uint64_t a_2, std::uint64_t a_3, std::uint64_t a_4)
+			{
+				{
+					ZoneScopedN("Verdeckung: Frame-Beginn");
+					Occlusion::OnFrameBegin();
+				}
+				return func(a_1, a_2, a_3, a_4);
+			}
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
 		struct RenderDepth
 		{
 			static void thunk(bool a_arg1, bool a_arg2)
 			{
+				ZoneScopedN("Tiefenvorpass");
 				g_drawFilterScopes.fetch_add(1, std::memory_order_relaxed);
 				g_inDepthPrepass.store(true, std::memory_order_relaxed);
 				Occlusion::OnDepthPrepassBegin();
@@ -774,15 +862,18 @@ namespace ShadowCulling
 			static void thunk(RE::BSCullingProcess* a_this, RE::BSGeometry& a_visible, std::int32_t a_alphaGroupIndex)
 			{
 				DiagRecord(a_this->camera);
-				// Figurenschatten ferner Figuren auch bei Rundum-Lichtern (Fackeln, Feuer) - bis 1.0.57 nur bei Spot-Lichtern
-				if (CullActorShadow(a_visible, true)) {
-					return;
-				}
+				// Fackelschatten-Regeln seit 1.0.69 erst beim Draw (SkipPointShadowDraw) - der Rundum-Durchlauf sammelt hier auch
+				// die Beleuchtung ein (Teilbaum-Pruning 0.16: von Laternen beleuchtete Flaechen wurden dunkel). Ohne Draw-Hook wie bisher.
 				const auto slot = PointSlot(a_this->camera);
-				if (g_pointCullAllowed.load(std::memory_order_relaxed) && PointCullOn() && !NearPointLight(a_this->camera, a_visible) &&
-					ShouldCull(Config::pointLightCulling, a_visible, UINT32_MAX, PointShadowScale(slot, a_visible))) {
-					Stats::Count(Stats::Counter::PointCulled);
-					return;
+				if (!PointDrawFilterReady()) {
+					if (CullActorShadow(a_visible, true)) {
+						return;
+					}
+					if (g_pointCullAllowed.load(std::memory_order_relaxed) && PointCullOn() && !NearPointLight(a_this->camera, a_visible) &&
+						ShouldCull(Config::pointLightCulling, a_visible, UINT32_MAX, PointShadowScale(slot, a_visible))) {
+						Stats::Count(Stats::Counter::PointCulled);
+						return;
+					}
 				}
 				Stats::Count(Stats::Counter::PointKept);
 				RecordPointMesh(slot, a_visible);
@@ -976,6 +1067,12 @@ namespace ShadowCulling
 					if (g_microListFrames.load(std::memory_order_relaxed) > 0) {
 						RecordMicroCulled(*a_geometry, a_accumulator);
 					}
+					// Winzige Objekte / ferne Bodendetails wie die Verdeckung erst beim Draw weglassen: der alte Weg (leere
+					// Pass-Liste) steht unter Verdacht fuer Licht-Abstuerze (1.0.65). Ohne Draw-Filter wie bisher.
+					if (MainDrawFilterReady()) {
+						Occlusion::MarkHidden(a_geometry);
+						return passes;
+					}
 					empty.head = nullptr;
 					return &empty;
 				} else if (passes && passes->head && a_geometry) {
@@ -989,7 +1086,7 @@ namespace ShadowCulling
 					}
 					// Teile an Figuren (Waffen, Schilde, Trommel auf dem Ruecken) bewegen sich mit der Animation -> nie weglassen
 					if (Occlusion::CountMain(*a_geometry, a_accumulator, draws) && !BelongsToActorNode(a_geometry)) {
-						if (Config::occlDrawFilter.load(std::memory_order_relaxed) && g_mainWorldHooked) {
+						if (Config::occlDrawFilter.load(std::memory_order_relaxed) && MainDrawFilterReady()) {
 							Occlusion::MarkHidden(a_geometry);  // normal anmelden, erst beim Draw im Hauptbild weglassen
 							return passes;
 						}
@@ -1071,49 +1168,62 @@ namespace ShadowCulling
 			if (!a_obj || !Config::subtreePruning.enabled || !Config::masterEnabled.load(std::memory_order_relaxed)) {
 				return false;
 			}
-			const auto node = a_obj->AsNode();
-			if (!node) {
-				return false;
+			// Reihenfolge nach Kosten (Tracy 1.0.69: 1,5-1,9 % des Hauptthreads): erst die Art des Durchlaufs (haengt nur am
+			// Culler), dann der Groessentest auf der Huelle, und erst wenn wirklich uebersprungen wuerde der virtuelle Aufruf
+			// AsNode - bis 1.0.69 lief er fuer jedes besuchte Objekt, uebersprungen wird nur ein kleiner Teil
+			const auto&              sp = Config::subtreePruning;
+			const Config::CullRule*  rule = nullptr;
+			std::uint32_t            cascade = UINT32_MAX;
+			float                    scale = 1.0f;
+			Stats::Counter           counter = Stats::Counter::PrunedPoint;
+			bool                     sun = false;
+			float                    precipMaxRadius = 0.0f;
+			if (a_parabolic) {
+				if (!sp.point) {
+					return false;
+				}
+				rule = &Config::pointLightCulling;
+			} else if (a_this->camera && a_this->camera == PrecipCamera()) {
+				const auto& sky = Config::skylightingCulling;
+				if (!sp.precip || !sky.enabled) {
+					return false;
+				}
+				precipMaxRadius = sky.minRadius;
+				counter = Stats::Counter::PrunedPrecip;
+			} else {
+				std::uint32_t c = 0;
+				switch (Classify(a_this, c)) {
+				case Kind::kSun:
+					if (!sp.sun || !g_sunCullAllowed.load(std::memory_order_relaxed)) {
+						return false;
+					}
+					rule = &Config::shadowCulling;
+					cascade = c;
+					scale = 1.0f / g_sunSin.load(std::memory_order_relaxed);
+					counter = Stats::Counter::PrunedSun;
+					sun = true;
+					break;
+				case Kind::kPoint:
+					if (!sp.point) {
+						return false;
+					}
+					rule = &Config::pointLightCulling;
+					break;
+				default:
+					return false;
+				}
 			}
-			const auto& bound = node->worldBound;
+			const auto& bound = a_obj->worldBound;
 			if (bound.radius <= 0.0f) {
 				return false;
 			}
-			const auto& sp = Config::subtreePruning;
-			if (a_parabolic) {
-				if (sp.point && ShouldCullBound(Config::pointLightCulling, bound, UINT32_MAX, 1.0f)) {
-					Stats::Count(Stats::Counter::PrunedPoint);
-					return true;
-				}
-				return false;
+			const bool cull = rule ? ShouldCullBound(*rule, bound, cascade, scale) : bound.radius < precipMaxRadius;
+			if (!cull || !a_obj->AsNode()) {
+				return false;  // einzelne Meshes entscheidet AppendVirtual
 			}
-			if (a_this->camera && a_this->camera == PrecipCamera()) {
-				const auto& sky = Config::skylightingCulling;
-				if (sp.precip && sky.enabled && bound.radius < sky.minRadius) {
-					Stats::Count(Stats::Counter::PrunedPrecip);
-					return true;
-				}
-				return false;
-			}
-			std::uint32_t cascade = 0;
-			switch (Classify(a_this, cascade)) {
-			case Kind::kSun:
-				if (sp.sun && g_sunCullAllowed.load(std::memory_order_relaxed) &&
-					ShouldCullBound(Config::shadowCulling, bound, cascade, 1.0f / g_sunSin.load(std::memory_order_relaxed))) {
-					Stats::Count(Stats::Counter::PrunedSun);
-					a_sun = true;
-					return true;
-				}
-				return false;
-			case Kind::kPoint:
-				if (sp.point && ShouldCullBound(Config::pointLightCulling, bound, UINT32_MAX, 1.0f)) {
-					Stats::Count(Stats::Counter::PrunedPoint);
-					return true;
-				}
-				return false;
-			default:
-				return false;
-			}
+			Stats::Count(counter);
+			a_sun = sun;
+			return true;
 		}
 
 		// Enthaelt der Teilbaum Figuren oder geskinnte Meshes (Stoff-Banner, Figuren in Gruppenknoten)? Die Regel fuer
@@ -1197,6 +1307,19 @@ namespace ShadowCulling
 			}
 			if (const auto prop = data.shaderProperty.get(); prop && netimmerse_cast<RE::BSEffectShaderProperty*>(prop)) {
 				return true;
+			}
+			// Wind (Baeume) bewegt das Mesh im Shader, ohne seine Lage zu aendern: im Cache fror der Schatten ein und sprang
+			// beim Wechsel zwischen Cache- und normalem Frame hin und her (Flackern bei tiefer Sonne je nach Blick, 27.10.)
+			if (const auto prop = data.shaderProperty.get(); prop && prop->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kTreeAnim)) {
+				const float dist = DistanceToCamera(a_geom.worldBound);
+				if (Config::analysis.load(std::memory_order_relaxed)) {
+					g_farTreeBands[dist < 2000.0f ? 0 : dist < 4000.0f ? 1 : dist < 8000.0f ? 2 : 3].fetch_add(1, std::memory_order_relaxed);
+				}
+				const float staticFrom = g_farTreeStatic.load(std::memory_order_relaxed);
+				if (!(staticFrom > 0.0f) || dist < staticFrom) {
+					return true;  // bewegt sich im Wind
+				}
+				return false;  // weit genug weg: steht still (Baum ist keine Figur, die Suche entfaellt)
 			}
 			struct Entry
 			{
@@ -1285,6 +1408,22 @@ namespace ShadowCulling
 			} else {
 				logger::warn("Hide occluded objects: Main::RenderWorld call site differs - hiding at collection (old way)");
 			}
+			// +0xD3 in SE, AE 1.6 und 1.7 (Faster Objects). Ziel muss Main::Begin sein oder ausserhalb von SkyrimSE.exe liegen
+			// (ein anderes Plugin hat die Stelle schon umgeschrieben - verketten). Ein anderer Spiel-Aufruf: nicht anfassen.
+			const REL::Relocation<std::uintptr_t> begin{ RELOCATION_ID(35560, 36559), 0xD3 };
+			const auto                            text = REL::Module::get().segment(REL::Segment::textx);
+			const auto                            target = Features::IsCall(begin.address()) ? begin.address() + 5 + *reinterpret_cast<const std::int32_t*>(begin.address() + 1) : 0;
+			const bool                            inGame = target >= text.address() && target < text.address() + text.size();
+			if (target && (target == REL::Relocation<std::uintptr_t>{ RELOCATION_ID(35562, 36561) }.address() || !inGame)) {
+				// Original zuerst merken, dann umschreiben (1.0.64: sonst Absturz, falls der Aufruf dazwischen laeuft)
+				MainBegin::func = target;
+				std::atomic_thread_fence(std::memory_order_seq_cst);
+				SKSE::GetTrampoline().write_call<5>(begin.address(), MainBegin::thunk);
+				Occlusion::SetFrameBeginHooked();
+				logger::info("Hook installed: Main::Begin call site - occlusion pyramid starts before the main view is collected");
+			} else {
+				logger::warn("Hide occluded objects: Main::Begin call site differs - pyramid starts later");
+			}
 		}
 #endif
 		// Main::RenderDepth wird nur indirekt aufgerufen (kein direkter call/jmp im Spielcode). Community Shaders leitet den
@@ -1313,6 +1452,8 @@ namespace ShadowCulling
 	}
 
 	bool IsMainViewAccumulator(const void* a_accumulator) noexcept { return IsMainWorldAccumulator(a_accumulator); }
+
+	bool MainDrawFilterReady() noexcept { return g_mainWorldHooked && LightShadowCache::DrawFilterInstalled(); }
 
 	bool ShouldSkipDepthPrepassDraw(const RE::BSRenderPass& a_pass) noexcept
 	{
@@ -1345,6 +1486,7 @@ namespace ShadowCulling
 		};
 		StableState   g_stable{};
 		std::uint32_t g_stableChanged = 0, g_stableReanchor = 0, g_stableRoll = 0;  // fuers [FarShadowCache]-Log
+		std::chrono::steady_clock::time_point g_shrinkSinceX{}, g_shrinkSinceY{}, g_shrinkSinceDepth{};  // seit wann zu gross (0 = nicht)
 		float         g_stableRollMaxDeg = 0.0f;  // groesste Drehung des Engine-Ausschnitts um die Sonnenachse gegen den gehaltenen
 		// Dreht die Engine den Ausschnitt um die Sonnenachse (Blickrichtung), wird neu ausgerichtet statt die umschliessende
 		// Flaeche ueber diesen Faktor hinaus zu vergroessern (groesserer Ausschnitt = groebere Texel, blassere kurze Schatten)
@@ -1382,10 +1524,13 @@ namespace ShadowCulling
 			auto& s = g_stable;
 			bool  changed = false;
 			auto  anchor = [&]() {
+                const float keepX = s.valid ? s.hx : 0.0f, keepY = s.valid ? s.hy : 0.0f;
                 s = {};
                 s.valid = true;
                 s.rot = rotE;
                 s.pos = posE;
+                s.hx = keepX;  // Groesse behalten: sonst wuchs die Kaskade nach jedem Sonnenschritt in Stufen neu (Spruenge)
+                s.hy = keepY;
                 changed = true;
 			};
 			if (!s.valid || Dot3(dirE, Col(s.rot, 0)) < std::cos(cfg.maxAngleDeg * 0.017453292f)) {
@@ -1422,16 +1567,34 @@ namespace ShadowCulling
 			const float x = 0.5f * (x0 + x1), y = 0.5f * (y0 + y1);
 			const float bhx = 0.5f * (x1 - x0), bhy = 0.5f * (y1 - y0);
 
-			// Groesse: erst bei zu klein oder deutlich zu gross neu (Stufen von extentStep)
-			const float needX = bhx + cfg.margin, needY = bhy + cfg.margin;
-			if (s.hx < needX || s.hx > needX + 2.0f * cfg.margin + cfg.extentStep) {
-				s.hx = QuantUp(needX * cfg.extentFactor, cfg.extentStep);
-				changed = true;
-			}
-			if (s.hy < needY || s.hy > needY + 2.0f * cfg.margin + cfg.extentStep) {
-				s.hy = QuantUp(needY * cfg.extentFactor, cfg.extentStep);
-				changed = true;
-			}
+			// Groesse: zu klein -> sofort wachsen (sonst fehlen Schatten). Zu gross -> erst schrumpfen, wenn das 10 s am Stueck so
+			// war. Bis 1.0.66 schrumpfte sie sofort: bei tiefer Sonne schwankt der Engine-Ausschnitt beim Drehen stark, die
+			// Kaskade sprang staendig zwischen Groessen, jede Aenderung der Texelgroesse liess die fernen Schatten flackern
+			// (27.10.: 299 von 370 Neuausrichtungen durch die Groesse; nur-wachsen-Test ohne Flackern).
+			constexpr auto kShrinkDelay = std::chrono::seconds(10);
+			const auto     now = std::chrono::steady_clock::now();
+			const float    needX = bhx + cfg.margin, needY = bhy + cfg.margin;
+			auto           fit = [&](float& a_h, float a_need, std::chrono::steady_clock::time_point& a_since) {
+                const bool tooBig = a_h > a_need + 2.0f * cfg.margin + cfg.extentStep;
+                if (!tooBig) {
+                    a_since = {};
+                }
+                if (a_h < a_need) {
+                    a_h = QuantUp(a_need * cfg.extentFactor, cfg.extentStep);
+                    a_since = {};
+                    changed = true;
+                } else if (tooBig) {
+                    if (a_since == std::chrono::steady_clock::time_point{}) {
+                        a_since = now;
+                    } else if (now - a_since >= kShrinkDelay) {
+                        a_h = QuantUp(a_need * cfg.extentFactor, cfg.extentStep);
+                        a_since = {};
+                        changed = true;
+                    }
+                }
+			};
+			fit(s.hx, needX, g_shrinkSinceX);
+			fit(s.hy, needY, g_shrinkSinceY);
 			// Mitte: nur verschieben, wenn der Engine-Ausschnitt nicht mehr hineinpasst - dann auf Texel gerundet
 			if (changed || std::abs(x - s.cx) + bhx > s.hx || std::abs(y - s.cy) + bhy > s.hy) {
 				const float texX = 2.0f * s.hx / static_cast<float>(std::max(1, std::abs(desc.port.GetWidth())));
@@ -1443,17 +1606,37 @@ namespace ShadowCulling
 			// Anker liegt nur noch knapp vor dem Engine-Bereich (Kamera hat sich zur Sonne hin bewegt): entlang der Sonnenrichtung
 			// zuruecksetzen. Sonst klemmte near bei 1 und schnitt Schattenwerfer ab, bis die Sonne neu ausgerichtet wurde.
 			// Seitlich (x/y, Ausschnitt) aendert sich dadurch nichts.
+			bool moved = s.f <= s.n;  // Tiefe bezieht sich auf s.pos: nach Neuausrichtung neu bestimmen
 			if (en - cfg.depthStep < 1.0f) {
 				const float slide = 1.0f - (en - cfg.depthStep) + 16.0f * cfg.depthStep;
 				s.pos = s.pos - Col(s.rot, 0) * slide;
 				en += slide;
 				ef += slide;
 				changed = true;
+				moved = true;
 			}
-			// Tiefe: eng an der Engine, nur depthStep Spielraum je Seite (Zittern im Stand), sonst sofort nachfuehren
-			if (changed || en < s.n || ef > s.f || (s.f - s.n) > (ef - en) + 4.0f * cfg.depthStep) {
+			// Tiefe wie die Groesse: zu eng -> sofort erweitern, zu weit -> erst nach 10 s am Stueck eng nachfuehren
+			// (Community Shaders bemisst weiche Schatten am Tiefenbereich: jeder Sprung aendert ihre Helligkeit)
+			const bool depthTooBig = (s.f - s.n) > (ef - en) + 4.0f * cfg.depthStep;
+			if (!depthTooBig) {
+				g_shrinkSinceDepth = {};
+			}
+			bool retrack = moved;
+			if (!retrack && depthTooBig) {
+				if (g_shrinkSinceDepth == std::chrono::steady_clock::time_point{}) {
+					g_shrinkSinceDepth = now;
+				} else if (now - g_shrinkSinceDepth >= kShrinkDelay) {
+					retrack = true;
+				}
+			}
+			if (retrack) {
 				s.n = std::max(1.0f, en - cfg.depthStep);
 				s.f = ef + cfg.depthStep;
+				g_shrinkSinceDepth = {};
+				changed = true;
+			} else if (en < s.n || ef > s.f) {
+				s.n = std::max(1.0f, std::min(s.n, en - cfg.depthStep));
+				s.f = std::max(s.f, ef + cfg.depthStep);
 				changed = true;
 			}
 			if (changed) {
@@ -1482,6 +1665,121 @@ namespace ShadowCulling
 	namespace
 	{
 		// ---------------- Cache der fernen Kaskade ----------------
+		// Inhalt des Caches als kompakte Tabelle (offene Adressierung): Schluessel und Lage eines Meshs liegen in genau einer
+		// Cache-Zeile (64 Byte). Bis 1.0.69 eine std::unordered_map - jede Suche ging ueber Bucket und Knoten (mehrere
+		// Cache-Fehlgriffe), Tracy am Markt: 1,1 % des Hauptthreads fuer ~1.300 Suchen je Bild. Die Referenzen (fuer die
+		// Pruefung auf entfernte Objekte) liegen getrennt daneben und werden im Draw-Pfad nicht beruehrt.
+		class FarTable
+		{
+		public:
+			struct alignas(64) Slot
+			{
+				const RE::BSGeometry* key = nullptr;
+				std::uint32_t         seen = 0;  // Zeichen-Durchgang, in dem es zuletzt geprueft wurde
+				float                 scale = 0.0f;
+				RE::NiPoint3          translate{};
+				RE::NiMatrix3         rotate{};
+			};
+			static_assert(sizeof(Slot) == 64);
+
+			Slot* Find(const RE::BSGeometry* a_key) noexcept
+			{
+				if (m_slots.empty()) {
+					return nullptr;
+				}
+				const std::size_t mask = m_slots.size() - 1;
+				for (std::size_t i = Hash(a_key) & mask;; i = (i + 1) & mask) {
+					auto& s = m_slots[i];
+					if (s.key == a_key) {
+						return &s;
+					}
+					if (!s.key) {
+						return nullptr;
+					}
+				}
+			}
+
+			// neu oder ersetzen; haelt eine Referenz, damit die Adresse bis zum naechsten Aufbau nicht wiederverwendet wird
+			void Insert(const RE::BSGeometry* a_key, const RE::NiTransform& a_world)
+			{
+				if ((m_count + 1) * 2 > m_slots.size()) {
+					Grow();
+				}
+				const std::size_t i = Place(a_key);
+				auto&             s = m_slots[i];
+				if (!s.key) {
+					s.key = a_key;
+					++m_count;
+					m_keep[i] = RE::NiPointer<RE::BSGeometry>(const_cast<RE::BSGeometry*>(a_key));
+				}
+				s.seen = 0;
+				s.scale = a_world.scale;
+				s.translate = a_world.translate;
+				s.rotate = a_world.rotate;
+			}
+
+			void Clear() noexcept
+			{
+				for (std::size_t i = 0; i < m_slots.size(); ++i) {
+					m_slots[i].key = nullptr;
+					m_keep[i].reset();
+				}
+				m_count = 0;
+			}
+
+			std::size_t Size() const noexcept { return m_count; }
+
+			// Mesh, das im Durchgang a_stamp nicht gezeichnet wurde und nicht mehr in der Welt ist?
+			template <class F>
+			bool AnyUnseen(std::uint32_t a_stamp, F&& a_removed) const
+			{
+				for (std::size_t i = 0; i < m_slots.size(); ++i) {
+					if (m_slots[i].key && m_slots[i].seen != a_stamp && m_keep[i] && a_removed(*m_keep[i])) {
+						return true;
+					}
+				}
+				return false;
+			}
+
+		private:
+			static std::size_t Hash(const void* a_p) noexcept
+			{
+				auto h = reinterpret_cast<std::uintptr_t>(a_p) >> 4;
+				h ^= h >> 17;
+				h *= 0x9E3779B97F4A7C15ull;
+				return static_cast<std::size_t>(h >> 32);
+			}
+
+			std::size_t Place(const RE::BSGeometry* a_key) const noexcept
+			{
+				const std::size_t mask = m_slots.size() - 1;
+				std::size_t       i = Hash(a_key) & mask;
+				while (m_slots[i].key && m_slots[i].key != a_key) {
+					i = (i + 1) & mask;
+				}
+				return i;
+			}
+
+			void Grow()
+			{
+				std::vector<Slot>                          oldSlots(std::max<std::size_t>(m_slots.size() * 2, 4096));
+				std::vector<RE::NiPointer<RE::BSGeometry>> oldKeep(oldSlots.size());
+				oldSlots.swap(m_slots);
+				oldKeep.swap(m_keep);
+				for (std::size_t i = 0; i < oldSlots.size(); ++i) {
+					if (oldSlots[i].key) {
+						const std::size_t j = Place(oldSlots[i].key);
+						m_slots[j] = oldSlots[i];
+						m_keep[j] = std::move(oldKeep[i]);
+					}
+				}
+			}
+
+			std::vector<Slot>                          m_slots;
+			std::vector<RE::NiPointer<RE::BSGeometry>> m_keep;
+			std::size_t                                m_count = 0;
+		};
+
 		struct FarState
 		{
 			bool                                  valid = false;     // Cache passt zur Projektion "build"
@@ -1503,15 +1801,60 @@ namespace ShadowCulling
 			// ferne Kaskade einsammelt, haengt auch von der Blickrichtung ab (Test 1.0.61: eine Summen-Pruefung schlug beim
 			// Drehen staendig an) - im Cache-Frame wird deshalb nur weggelassen, was nachweislich im Cache steckt; Neues wird
 			// normal gezeichnet (wie beim Cache fester Lichter). Bewegt sich ein gespeichertes Mesh, wird neu aufgebaut.
-			std::unordered_map<const RE::BSGeometry*, std::uint64_t> statics;
+			// Lage beim Aufbau (tolerant verglichen wie beim Licht-Cache) und eine Referenz: so laesst sich im Cache-Frame
+			// pruefen, ob ein nicht mehr gezeichnetes Mesh aus der Welt genommen wurde (sonst bliebe sein Schatten stehen)
+			FarTable statics;
+			// Gelernte Bewegliche: hat sich ein Mesh einmal bewegt (Schild im Wind, Muehlrad), kommt es nicht mehr in den
+			// Cache - sonst baute er staendig neu auf (wie beim Licht-Cache)
+			std::unordered_set<const RE::BSGeometry*> promoted;
+			std::uint32_t                         drawStamp = 0, matched = 0;
+			std::uint32_t                         setups = 0, passes = 0;  // Utility-Draws / davon durch den Filter gelaufen
+			bool                                  uncovered = false;       // Aufbau: Draws am Filter vorbei (Figur im Cache?)
+			std::uint32_t                         removeCheck = 0;
 			std::uint32_t                         extras = 0;  // Cache-Frame: zusaetzlich gezeichnete Draws (nicht im Cache)
 			bool                                  broken = false;  // Cache-Frame: ein gespeichertes Mesh hat sich bewegt
 			std::uint64_t                         changed = 0, extrasSum = 0;
+			std::uint64_t                         removed = 0, uncoveredBuilds = 0, uncoveredDraws = 0, learned = 0;
 			bool                                  gpuHeld = false;  // FarShadowGpu haelt Kopien (bei Abschalten freigeben)
 			std::chrono::steady_clock::time_point lastLog = std::chrono::steady_clock::now();
 		};
 		FarState g_far{};
 		constexpr std::uint32_t kFarMaxExtras = 400;  // mehr neue Draws im Cache-Frame -> neu aufbauen
+
+		// Bewegt im Sinne des Schattens? Wie beim Licht-Cache tolerant: bis 1.0.68 eine gerundete Pruefsumme, die bei winzigem
+		// Zittern (Physik in Ruhe) ueber Rundungsgrenzen sprang und Neuaufbauten ausloeste
+		bool FarMeshMoved(const FarTable::Slot& a_a, const RE::NiTransform& a_b) noexcept
+		{
+			const float dx = a_a.translate.x - a_b.translate.x, dy = a_a.translate.y - a_b.translate.y, dz = a_a.translate.z - a_b.translate.z;
+			if (dx * dx + dy * dy + dz * dz > 2.0f * 2.0f || std::abs(a_a.scale - a_b.scale) > 0.01f) {
+				return true;
+			}
+			for (int r = 0; r < 3; ++r) {
+				for (int c = 0; c < 3; ++c) {
+					if (std::abs(a_a.rotate.entry[r][c] - a_b.rotate.entry[r][c]) > 0.01f) {
+						return true;
+					}
+				}
+			}
+			return false;
+		}
+
+		// Noch in der Welt? Weggenommen/deaktiviert haengt das 3D nicht mehr unter der Szene oder ist ausgeblendet
+		bool FarStillInWorld(const RE::BSGeometry& a_geom) noexcept
+		{
+			const auto            root = RE::BSShaderManager::State::GetSingleton().shadowSceneNode[0];
+			const RE::NiAVObject* obj = &a_geom;
+			for (int depth = 0; obj && depth < 64; ++depth) {
+				if (obj->GetAppCulled()) {
+					return false;
+				}
+				if (obj == root) {
+					return true;
+				}
+				obj = obj->parent;
+			}
+			return false;
+		}
 
 		bool SameProjection(const Projection& a_a, const Projection& a_b) noexcept
 		{
@@ -1528,7 +1871,9 @@ namespace ShadowCulling
 			f.decided = true;
 			FarMode     mode = FarMode::kNormal;
 			const auto& descs = a_light->GetRuntimeData().shadowmapDescriptors;
-			const bool  on = Config::farShadowCache.enabled && Config::masterEnabled.load(std::memory_order_relaxed) && g_stable.valid && kFarCascade < descs.size();
+			// Bottled Shaders: eigene Schatten-Optimierungen, wie beim Licht-Cache nur auf ausdrueckliche Erlaubnis (Review 1.0.69)
+			const bool  bottledBlock = Occlusion::BottledInstalled() && !Config::farShadowCache.allowWithBottled;
+			const bool  on = Config::farShadowCache.enabled && !bottledBlock && Config::masterEnabled.load(std::memory_order_relaxed) && g_stable.valid && kFarCascade < descs.size();
 			const auto cam = on ? descs[kFarCascade].camera.get() : nullptr;
 			if (on && cam) {
 				const auto& d = descs[kFarCascade];
@@ -1599,9 +1944,12 @@ namespace ShadowCulling
 			const double n = static_cast<double>(f.frames);
 			const double c = f.cached ? static_cast<double>(f.cached) : 1.0;
 			logger::info("[FarShadowCache] {} frames | from cache {:.0f} % | rebuilds {} (prepared {}) | not cached {} | per cached frame: draws skipped {:.0f} | draw hook missed {} (other target {}) | "
-						 "no build: projection changed {}, not saved {} | cache dropped: projection changed {} | cascade realigned {} (sun moved on {}, turned with view on {}, max turn {:.1f} deg) | rebuilt for moved/new objects {} (new drawn per cached frame {:.0f})",
+						 "no build: projection changed {}, not saved {} | cache dropped: projection changed {} | cascade realigned {} (sun moved on {}, turned with view on {}, max turn {:.1f} deg) | rebuilt for moved/new objects {} (new drawn per cached frame {:.0f}), removed objects {}, draws outside filter {} (builds dropped {}), learned movers {} | trees in wind per frame: <2000 {:.0f}, 2000-4000 {:.0f}, 4000-8000 {:.0f}, >8000 {:.0f} (static from {:.0f})",
 				f.frames, 100.0 * static_cast<double>(f.cached) / n, f.builds, f.waits, f.normal, static_cast<double>(g_farSkippedStatic.exchange(0)) / c,
-				f.hookMissed, f.notBound, f.waitProjChanged, f.waitNotSaved, f.cacheProjChanged, g_stableChanged, g_stableReanchor, g_stableRoll, g_stableRollMaxDeg, f.changed, static_cast<double>(f.extrasSum) / c);
+				f.hookMissed, f.notBound, f.waitProjChanged, f.waitNotSaved, f.cacheProjChanged, g_stableChanged, g_stableReanchor, g_stableRoll, g_stableRollMaxDeg, f.changed, static_cast<double>(f.extrasSum) / c, f.removed, f.uncoveredDraws, f.uncoveredBuilds, f.promoted.size(),
+				static_cast<double>(g_farTreeBands[0].exchange(0)) / n, static_cast<double>(g_farTreeBands[1].exchange(0)) / n, static_cast<double>(g_farTreeBands[2].exchange(0)) / n,
+				static_cast<double>(g_farTreeBands[3].exchange(0)) / n, g_farTreeStatic.load());
+			f.removed = f.uncoveredDraws = f.uncoveredBuilds = 0;
 			f.waitProjChanged = f.waitNotSaved = f.cacheProjChanged = 0;
 			f.hookMissed = f.notBound = f.changed = 0;
 			f.extrasSum = 0;
@@ -1614,7 +1962,8 @@ namespace ShadowCulling
 		// ihr Stand; sonst wurde normal (alles) gezeichnet und der Cache baut neu auf.
 		void FarAfterRender() noexcept
 		{
-			if (!Config::farShadowCache.enabled) {
+			// aus, oder alles aus ("Bild auf"): auch dann die Kopien freigeben (Review 1.0.69)
+			if (!Config::farShadowCache.enabled || !Config::masterEnabled.load(std::memory_order_relaxed)) {
 				if (g_far.gpuHeld) {
 					FarShadowGpu::Reset();  // ~16-64 MB VRAM nicht dauerhaft halten
 					g_far.gpuHeld = false;
@@ -1631,7 +1980,7 @@ namespace ShadowCulling
 				++f.waits;
 				break;
 			case FarMode::kBuild:
-				f.valid = f.drawDone;
+				f.valid = f.drawDone && !f.uncovered;
 				++f.builds;
 				break;
 			case FarMode::kCached:
@@ -1711,8 +2060,12 @@ namespace ShadowCulling
 		f.drawTex = tex;
 		f.extras = 0;
 		f.broken = false;
+		f.setups = f.passes = 0;
+		f.matched = 0;
+		++f.drawStamp;
 		if (mode == FarMode::kBuild) {
-			f.statics.clear();
+			f.statics.Clear();
+			f.uncovered = false;
 		}
 		g_farDrawMode = static_cast<int>(mode);
 		return true;
@@ -1725,6 +2078,15 @@ namespace ShadowCulling
 		g_farDrawMode = 0;
 		if (!f.drawCtx || !f.drawTex) {
 			return;
+		}
+		// Draws am Filter vorbei (andere Mods, anderer Zeichenweg): im Aufbau koennte so eine Figur im Cache landen und
+		// als eingefrorener Schatten stehen bleiben -> Aufbau verwerfen (wie beim Licht-Cache)
+		if ((mode == FarMode::kBuild || mode == FarMode::kCached) && f.setups > f.passes) {
+			f.uncoveredDraws += f.setups - f.passes;
+			if (mode == FarMode::kBuild) {
+				f.uncovered = true;
+				++f.uncoveredBuilds;
+			}
 		}
 		switch (mode) {
 		case FarMode::kWait:
@@ -1740,6 +2102,15 @@ namespace ShadowCulling
 			if (f.broken || f.extras > kFarMaxExtras) {
 				f.valid = false;
 				++f.changed;
+			} else if (f.matched < f.statics.Size() && ++f.removeCheck % 8 == 0) {
+				ZoneScopedN("Fernschatten: entfernte Objekte pruefen");
+				// Nicht gezeichnete Cache-Meshes: oft nur nicht eingesammelt (die Auswahl haengt vom Blick ab), aber ein
+				// weggenommenes Objekt liesse seinen Schatten im Cache stehen. Jedes 8. Cache-Bild pruefen, ob sie noch in
+				// der Welt sind (Review 1.0.69)
+				if (f.statics.AnyUnseen(f.drawStamp, [](const RE::BSGeometry& a_geom) { return !FarStillInWorld(a_geom); })) {
+					f.valid = false;
+					++f.removed;
+				}
 			}
 			break;
 		default:
@@ -1752,8 +2123,51 @@ namespace ShadowCulling
 
 	namespace
 	{
-		thread_local bool t_inShadowMapDraw = false;
+		thread_local bool                t_inShadowMapDraw = false;
+		thread_local const RE::NiCamera* t_mapCamera = nullptr;  // Kamera der Schattenkarte, die gerade gezeichnet wird
+		thread_local std::uint32_t       t_mapSlot = UINT32_MAX;  // ihr Punktlicht-Platz, einmal je Karte gesucht
+		thread_local bool                t_mapCached = false;    // der Licht-Cache verwaltet diese Karte (Aufbau/Cache)
 	}
+
+	void SetShadowMapContext(const RE::NiCamera* a_camera, bool a_cached) noexcept
+	{
+		t_mapCamera = a_camera;
+		// je Karte einmal statt je Draw (Tracy 1.0.70: 0,4 % des Hauptthreads am Markt fuer die Suche je Draw)
+		t_mapSlot = a_camera ? PointSlot(a_camera) : UINT32_MAX;
+		t_mapCached = a_cached;
+	}
+
+	// Fackel-/Punktlichtschatten kleiner Objekte und ferner Figuren erst beim Draw der Schattenkarte weglassen. Bis 1.0.68
+	// beim Einsammeln - dort sammelt der Punktlicht-Durchlauf auch die Beleuchtung ein: kleine ferne Objekte neben Laternen
+	// verloren das Licht (Review 1.0.69, dieselbe Erfahrung wie 1.0.33 und Teilbaum-Pruning 0.16). Verwaltet der Licht-Cache
+	// die Karte, entscheidet er allein ueber Unbewegliches - sonst baute ein Objekt, das die Entfernungsgrenze kreuzt, das
+	// Licht jedes Mal neu auf (seine Ersparnis deckt sich ohnehin mit diesem Culling).
+	bool SkipPointShadowDraw(const RE::BSRenderPass& a_pass) noexcept
+	{
+		if (!t_inShadowMapDraw || !t_mapCamera || !a_pass.geometry || !Config::masterEnabled.load(std::memory_order_relaxed)) {
+			return false;
+		}
+		const auto slot = t_mapSlot;
+		if (slot == UINT32_MAX) {
+			return false;  // Sonne oder unbekannte Kamera
+		}
+		const auto& geom = *a_pass.geometry;
+		if (CullActorShadow(geom, true)) {
+			return true;
+		}
+		if (t_mapCached) {
+			return false;
+		}
+		if (g_pointCullAllowed.load(std::memory_order_relaxed) && PointCullOn() && !NearPointLight(t_mapCamera, geom) &&
+			ShouldCull(Config::pointLightCulling, geom, UINT32_MAX, PointShadowScale(slot, geom))) {
+			Stats::Count(Stats::Counter::PointCulled);
+			return true;
+		}
+		return false;
+	}
+
+	void SetFarTreeStaticDistance(float a_units) noexcept { g_farTreeStatic.store(a_units, std::memory_order_relaxed); }
+	float GetFarTreeStaticDistance() noexcept { return g_farTreeStatic.load(std::memory_order_relaxed); }
 
 	void SetInShadowMapDraw(bool a_in) noexcept
 	{
@@ -1780,12 +2194,29 @@ namespace ShadowCulling
 		if (b.radius <= 0.0f || b.radius >= cfg.maxRadius) {
 			return false;
 		}
-		if (DistanceToCamera(b) > cfg.minDistance) {
+		// Schnell raus: Teil deutlich naeher als die Rueckkehr-Grenze -> sicher behalten (keine Suche nach der Figur)
+		if (DistanceToCamera(b) + 2.0f * b.radius < 0.9f * cfg.minDistance - 200.0f) {
+			Stats::Count(Stats::Counter::ActorPartShadowKept);
+			return false;
+		}
+		// Je Figur nach ihrer Position und mit Hysterese, wie bei fernen Figurenschatten (1.0.60): bis 1.0.68 je Teil nach
+		// der eigenen Huelle - an der Grenze pendelten Ringe/Ohrringe durch die Animation rein und raus. Nur Figuren: auch
+		// Baeume sind geskinnt (Wind).
+		const auto actor = OwningActor(geom);
+		if (actor && ActorBeyond(*actor, cfg.minDistance, g_actorPartState)) {
 			Stats::Count(Stats::Counter::ActorPartShadowCulled);
 			return true;
 		}
 		Stats::Count(Stats::Counter::ActorPartShadowKept);
 		return false;
+	}
+
+	void FarOnUtilityDraw() noexcept
+	{
+		const auto mode = static_cast<FarMode>(g_farDrawMode);
+		if (mode == FarMode::kCached || mode == FarMode::kBuild) {
+			++g_far.setups;
+		}
 	}
 
 	bool FarSkipDraw(const RE::BSRenderPass& a_pass) noexcept
@@ -1795,36 +2226,62 @@ namespace ShadowCulling
 			return false;
 		}
 		const auto& geom = *a_pass.geometry;
-		const bool  dyn = FarDynamic(geom);
-		if (dyn) {
-			return mode == FarMode::kBuild;  // Aufbau: Cache nur mit Unbeweglichem; Cache-Frame: Bewegliches zeichnen
-		}
 		auto&       f = g_far;
-		const auto& w = geom.world;
-		const auto  pose = Mix64(Quant(w.translate.x, 0.25f) ^ (Quant(w.translate.y, 0.25f) << 21) ^ (Quant(w.translate.z, 0.25f) << 42) ^
-                                Mix64(Quant(w.rotate.entry[0][0], 1000.0f) ^ (Quant(w.rotate.entry[1][1], 1000.0f) << 21) ^ (Quant(w.rotate.entry[0][1], 1000.0f) << 42)));
+		// Cache-Frame: zuerst im Cache nachsehen - was dort steht, wurde beim Aufbau als unbeweglich eingestuft, die Suche
+		// nach der Figur (FarDynamic, eigene Tabelle) entfaellt dann. Tracy 1.0.69: die Doppel-Suche je Draw kostete am
+		// Markt ~1,6 % des Hauptthreads (wie beim Licht-Cache seit 1.0.57)
+		if (mode == FarMode::kCached) {
+			try {
+				if (const auto e = f.statics.Find(&geom)) {
+					if (e->seen != f.drawStamp) {
+						e->seen = f.drawStamp;
+						++f.matched;
+					}
+					if (FarMeshMoved(*e, geom.world)) {
+						// bewegt (Tuer, Havok, Schild im Wind): zeichnen, ab jetzt als beweglich lernen; der Cache enthaelt noch
+						// die alte Lage -> neu aufbauen
+						if (f.promoted.size() < 4096) {
+							f.promoted.insert(&geom);
+						}
+						f.broken = true;
+						++f.passes;
+						return false;
+					}
+					if (Config::analysis.load(std::memory_order_relaxed)) {
+						g_farSkippedStatic.fetch_add(1, std::memory_order_relaxed);
+					}
+					return true;  // steckt im Cache
+				}
+			} catch (...) {
+				f.broken = true;
+				++f.passes;
+				return false;
+			}
+		}
+		bool dyn = false;
 		try {
-			if (mode == FarMode::kBuild) {
-				f.statics.insert_or_assign(&geom, pose);
-				return false;
-			}
-			const auto it = f.statics.find(&geom);
-			if (it == f.statics.end()) {
-				++f.extras;  // nicht im Cache (neu in Sicht, eingeblendet): normal zeichnen
-				return false;
-			}
-			if (it->second != pose) {
-				f.broken = true;  // bewegt (Tuer, Havok): zeichnen, der Cache enthaelt noch die alte Lage
-				return false;
-			}
+			dyn = FarDynamic(geom) || f.promoted.contains(&geom);
 		} catch (...) {
-			f.broken = true;
+			dyn = true;
+		}
+		if (dyn) {
+			if (mode == FarMode::kBuild) {
+				return true;  // Aufbau: Cache nur mit Unbeweglichem
+			}
+			++f.passes;
+			return false;  // Cache-Frame: Bewegliches zeichnen
+		}
+		++f.passes;
+		if (mode == FarMode::kBuild) {
+			try {
+				f.statics.Insert(&geom, geom.world);
+			} catch (...) {
+				f.uncovered = true;  // nicht vollstaendig erfasst: Aufbau verwerfen
+			}
 			return false;
 		}
-		if (Config::analysis.load(std::memory_order_relaxed)) {
-			g_farSkippedStatic.fetch_add(1, std::memory_order_relaxed);
-		}
-		return true;  // steckt im Cache
+		++f.extras;  // Cache-Frame, nicht im Cache (neu in Sicht, eingeblendet): normal zeichnen
+		return false;
 	}
 
 	void AfterSunUpdateCamera(RE::BSShadowDirectionalLight* a_light) noexcept
@@ -1834,6 +2291,7 @@ namespace ShadowCulling
 		}
 		StabilizeFarCascade(a_light);
 		FarDecide(a_light);
+		Occlusion::OnViewCamera();
 	}
 
 	void BeforeSunAccumulate(RE::BSShadowDirectionalLight* a_light) noexcept
@@ -1856,6 +2314,7 @@ namespace ShadowCulling
 	{
 		g_far = {};
 		g_stable.valid = false;
+		g_shrinkSinceX = g_shrinkSinceY = g_shrinkSinceDepth = {};
 		g_cacheLight = nullptr;
 		g_farDrawMode = 0;
 		g_farMode.store(static_cast<int>(FarMode::kNormal), std::memory_order_relaxed);
@@ -1873,6 +2332,7 @@ namespace ShadowCulling
 	void OnFrame()
 	{
 		Config::ReloadIfChanged();
+		UpdateMainViewScale();
 		EngineTimers::OnFrame();
 		TextureStream::OnFrame();
 #ifndef SPS_VR

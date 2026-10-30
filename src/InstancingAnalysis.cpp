@@ -614,6 +614,9 @@ namespace InstancingAnalysis
 					if (ShadowCulling::SkipActorPartShadowDraw(*a_pass)) {
 						return;  // kleines Figurenteil in der Ferne: Schatten nicht sichtbar
 					}
+					if (ShadowCulling::SkipPointShadowDraw(*a_pass)) {
+						return;  // Fackelschatten: kleines fernes Objekt oder ferne Figur
+					}
 					if (LightShadowCache::SkipDraw(*a_pass)) {
 						return;  // Schatten steckt in der zwischengespeicherten Karte
 					}
@@ -688,6 +691,7 @@ namespace InstancingAnalysis
 			{
 				Stats::Count(Stats::Counter::UtilityDraws);
 				LightShadowCache::OnUtilityDraw();
+				ShadowCulling::FarOnUtilityDraw();
 				if (ShadowCulling::InDepthPrepass()) {
 					Stats::Count(Stats::Counter::DepthDrawsAll);
 				}

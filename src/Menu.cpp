@@ -283,10 +283,15 @@ namespace Menu
 				T("Small, far objects do not cast shadows from torches and fires.", "Kleine, ferne Objekte werfen keinen Schatten von Fackeln und Feuern."));
 			Toggle(T("Character shadow culling", "Figurenschatten in der Ferne weglassen"), Config::actorShadowCulling.enabled,
 				T("Characters far away do not cast shadows.", "Weit entfernte Figuren werfen keinen Schatten."));
+			Toggle(T("Small character parts cast no shadow", "Kleine Figurenteile ohne Schatten"), Config::actorPartShadowCulling.enabled,
+				T("Rings, earrings, eyes, teeth and small armor parts of characters a few meters away cast no shadow (invisible at that distance). Saves draw calls in crowded places. Anniversary Edition only.",
+					"Ringe, Ohrringe, Augen, Zähne und kleine Rüstungsteile von Figuren werfen ab wenigen Metern keinen Schatten (dort nicht zu sehen). Spart Draw Calls an vollen Orten. Nur Anniversary Edition."));
 			Toggle(T("Skylighting culling (Community Shaders)", "Himmelslicht: kleine Objekte weglassen (Community Shaders)"), Config::skylightingCulling.enabled,
 				T("Small objects are left out of the skylighting occlusion map.", "Kleine Objekte werden in der Himmelslicht-Karte weggelassen."));
 			Toggle(T("Decal culling", "Ferne Bodendetails weglassen"), Config::decalCulling.enabled,
 				T("Small decals (footprints, blood, dirt) far away are not drawn.", "Kleine Bodendetails (Fußspuren, Blut, Schmutz) in der Ferne werden nicht gezeichnet."));
+			AtomicToggle(T("Hide occluded objects", "Verdeckte Objekte weglassen"), Config::occlusionCull,
+				T("Objects completely hidden behind walls, houses or terrain are not drawn. Fine-tuning on the page Lights and scene.", "Objekte, die ganz hinter Mauern, Häusern oder Gelände verdeckt sind, werden nicht gezeichnet. Feineinstellung auf der Seite Licht und Szene."));
 			Toggle(T("Shadow cache for static lights", "Schatten fester Lichter zwischenspeichern"), Config::lightShadowCache.enabled,
 				T("Shadows of lights that do not move are kept, only characters and moving things are redrawn. Mainly for interiors. Switch off if shadows near fires pulse.",
 					"Schatten von Lichtern, die sich nicht bewegen, werden aufbewahrt, nur Figuren und Bewegliches werden neu gezeichnet. Vor allem für Innenräume. Ausschalten, falls Schatten an Feuern pulsieren."));
@@ -300,20 +305,26 @@ namespace Menu
 				T("Textures of far objects are shrunk in VRAM and reloaded at full size when you come closer.",
 					"Texturen ferner Objekte werden im VRAM verkleinert und bei Annäherung in voller Größe neu geladen."));
 
-			MenuApi::SeparatorText(T("Beta (off by default)", "Beta (standardmäßig aus)"));
-			MenuApi::TextWrapped("%s", T("These work, but not perfectly on every setup yet. Switch off again if something looks wrong.", "Diese funktionieren, aber noch nicht auf jedem System perfekt. Bei Bildfehlern wieder ausschalten."));
-			Toggle(T("Shadow instancing (BETA)", "Gleiche Schatten bündeln (BETA)"), Config::shadowInstancing.enabled,
+			MenuApi::SeparatorText(T("Optional (off by default)", "Optional (standardmäßig aus)"));
+			MenuApi::TextWrapped("%s", T("Off by default. Depending on your setup and mods they can help, switch them off again if something looks wrong.", "Standardmäßig aus. Je nach System und Mods können sie helfen, bei Bildfehlern wieder ausschalten."));
+			Toggle(T("Shadow instancing (optional)", "Gleiche Schatten bündeln (optional)"), Config::shadowInstancing.enabled,
 				T("Draws identical simple meshes in sun shadows with one draw call. Small gain. Takes effect after restarting the game. Switch off again if shadows or meshes flicker.", "Zeichnet gleiche einfache Objekte im Sonnenschatten in einem Durchgang. Kleiner Gewinn. Wirkt erst nach einem Neustart des Spiels. Bei flackernden Schatten oder Objekten wieder ausschalten."));
-			Toggle(T("Small character parts cast no shadow (BETA)", "Kleine Figurenteile ohne Schatten (BETA)"), Config::actorPartShadowCulling.enabled,
-				T("Rings, earrings, eyes, teeth and small armor parts of characters a few meters away cast no shadow (invisible at that distance). Saves draw calls in crowded places. Anniversary Edition only.",
-					"Ringe, Ohrringe, Augen, Zähne und kleine Rüstungsteile von Figuren werfen ab wenigen Metern keinen Schatten (dort nicht zu sehen). Spart Draw Calls an vollen Orten. Nur Anniversary Edition."));
-			Toggle(T("Main view micro culling (BETA)", "Winzige Objekte im Bild weglassen (BETA)"), Config::mainViewCulling.enabled,
+			Toggle(T("Main view micro culling (optional)", "Winzige Objekte im Bild weglassen (optional)"), Config::mainViewCulling.enabled,
 				T("Tiny far objects are not drawn at all. They can pop in.", "Winzige ferne Objekte werden gar nicht gezeichnet. Sie können aufploppen."));
-			Toggle(T("Far shadow cache (BETA)", "Ferne Sonnenschatten zwischenspeichern (BETA)"), Config::farShadowCache.enabled,
+			const bool farBlocked = Occlusion::BottledInstalled() && !Config::farShadowCache.allowWithBottled;
+			if (farBlocked) {
+				MenuApi::TextWrapped("%s", T("Far shadow cache paused: Bottled Shaders is installed and has its own shadow optimizations. Allow it below to use both.",
+												"Ferne Sonnenschatten pausiert: Bottled Shaders ist installiert und hat eigene Schatten-Optimierungen. Unten erlauben, um beide zu nutzen."));
+			}
+			MenuApi::BeginDisabled(farBlocked);
+			Toggle(T("Far shadow cache (optional)", "Ferne Sonnenschatten zwischenspeichern (optional)"), Config::farShadowCache.enabled,
 				T("Static objects (houses, rocks, trees) are drawn into the far sun shadows only when the sun or the view moves on; in between only characters and moving things are drawn. Outdoors this saves around 1,000 to 1,500 draw calls per frame and helps most on systems limited by draw calls. Far shadows shimmer less and follow the sun in small steps. Anniversary Edition only. Switch off if far shadows flicker or are missing.",
 					"Unbewegliche Objekte (Häuser, Felsen, Bäume) werden nur dann in die fernen Sonnenschatten gezeichnet, wenn Sonne oder Blick weiterwandern; dazwischen nur Figuren und Bewegliches. Spart draußen etwa 1.000 bis 1.500 Draw Calls pro Frame und hilft vor allem Systemen, die an Draw Calls hängen. Ferne Schatten flimmern weniger und folgen der Sonne in kleinen Schritten. Nur Anniversary Edition. Ausschalten, falls ferne Schatten flackern oder fehlen."));
-			AtomicToggle(T("Hide occluded objects (BETA)", "Verdeckte Objekte weglassen (BETA)"), Config::occlusionCull,
-				T("Objects completely hidden behind walls, houses or terrain are not drawn. Fine-tuning on the page Beta.", "Objekte, die ganz hinter Mauern, Häusern oder Gelände verdeckt sind, werden nicht gezeichnet. Feineinstellung auf der Seite Beta."));
+			MenuApi::EndDisabled();
+			if (Occlusion::BottledInstalled()) {
+				Toggle(T("Far shadow cache with Bottled Shaders anyway##far", "Ferne Sonnenschatten trotz Bottled Shaders zwischenspeichern##far"), Config::farShadowCache.allowWithBottled,
+					T("Only if far shadows look right with both. Default off.", "Nur, wenn ferne Schatten mit beiden richtig aussehen. Standard aus."));
+			}
 
 			MenuApi::SeparatorText(T("Settings", "Einstellungen"));
 			if (MenuApi::Button(T("Reset to defaults", "Auf Standard zurücksetzen"))) {
@@ -341,8 +352,8 @@ namespace Menu
 
 		void __stdcall RenderDebug()
 		{
-			MenuApi::TextWrapped("%s", T("For troubleshooting and tests. Nothing on this page is saved, everything is off again after a restart.",
-											"Für Fehlersuche und Tests. Nichts auf dieser Seite wird gespeichert, nach einem Neustart ist alles wieder aus."));
+			MenuApi::TextWrapped("%s", T("For troubleshooting and tests. Nothing on this page is saved unless it says so, everything else is off again after a restart.",
+											"Für Fehlersuche und Tests. Nichts auf dieser Seite wird gespeichert, außer wo es dabeisteht. Alles andere ist nach einem Neustart wieder aus."));
 			MenuApi::SeparatorText(T("Logging", "Protokoll"));
 			if (AtomicToggle(T("Analysis logging (costs performance)", "Analyse-Protokoll (kostet Leistung)"), Config::analysis,
 					T("Extra diagnostics in SPS.log (incl. detailed texture streaming report every 10 s). Costs 2-4 ms per frame - only for troubleshooting. Not saved - always starts OFF.",
@@ -362,6 +373,16 @@ namespace Menu
 			Tip(T("Writes the textures of the objects in the middle of the screen (path, original and current size) to SPS.log.",
 				"Schreibt die Texturen der Objekte in der Bildmitte (Pfad, Original- und aktuelle Größe) in SPS.log."));
 
+			MenuApi::SeparatorText(T("Far shadow cache: trees (test)", "Ferne Sonnenschatten: Bäume (Test)"));
+			{
+				float v = ShadowCulling::GetFarTreeStaticDistance();
+				if (MenuApi::SliderFloat(T("Trees count as still from##farTrees", "Bäume gelten als unbewegt ab##farTrees"), &v, 0.0f, 12000.0f, v > 0.0f ? "%.0f" : T("never", "nie"))) {
+					ShadowCulling::SetFarTreeStaticDistance(v < 250.0f ? 0.0f : std::round(v / 250.0f) * 250.0f);
+				}
+				Tip(T("Trees only sway in the wind near you. From this distance (game units, ~70 per meter) their far sun shadows are cached like rocks and houses. Too low: tree shadows freeze or jump. 0 = never. Default from SPS.ini (fTreesStillFrom, 2000). Not saved, for testing.",
+					"Bäume bewegen sich nur in deiner Nähe im Wind. Ab dieser Entfernung (Einheiten, ~70 pro Meter) werden ihre fernen Sonnenschatten wie Felsen und Häuser zwischengespeichert. Zu klein: Baumschatten frieren ein oder springen. 0 = nie. Standard aus SPS.ini (fTreesStillFrom, 2000). Wird nicht gespeichert, zum Testen."));
+			}
+
 			MenuApi::SeparatorText(T("Developer tests", "Entwickler-Tests"));
 			Toggle(T("Depth pre-pass culling", "Tiefenvorpass: kleine Objekte weglassen"), Config::depthPrepassCulling.enabled,
 				T("For testing only, can make whole objects disappear. Default OFF (saved).", "Nur zum Testen, kann ganze Objekte verschwinden lassen. Standard AUS (wird gespeichert)."));
@@ -374,7 +395,7 @@ namespace Menu
 			Tip(T("Writes all objects that micro culling and far decal culling leave out in the main view over the next 30 frames to SPS_MicroCulled_N.csv next to SPS.log (name, reference, parent nodes, size, distance).",
 				"Schreibt alle Objekte, die Mikro-Culling und ferne Decals in den nächsten 30 Frames im Hauptbild weglassen, nach SPS_MicroCulled_N.csv neben SPS.log (Name, Referenz, übergeordnete Knoten, Größe, Abstand)."));
 
-			MenuApi::SeparatorText(T("Beta features (measurement)", "Beta-Funktionen (Messung)"));
+			MenuApi::SeparatorText(T("Optional features (measurement)", "Optionale Funktionen (Messung)"));
 			if (EngineTimers::BetaABRunning()) {
 				MenuApi::TextWrapped("%s", T("Measurement running (3 min) - close the menu and stand still or walk the same route.",
 												"Messung läuft (3 min) - Menü schließen und stehen bleiben oder dieselbe Strecke laufen."));
@@ -422,15 +443,29 @@ namespace Menu
 				"Schreibt das aktuelle Tiefenbild des Verdeckungs-Tests neben SPS.log (SPS_OcclusionDepth_N.pgm). Gleichzeitig einen Screenshot machen."));
 		}
 
-		// Beta: fertige, aber noch wenig erprobte Funktionen, Standard AUS
-		void __stdcall RenderBeta()
+		// Verdeckte Objekte weglassen (bis 1.0.67 Beta auf eigener Seite, seit 1.0.68 Standard an, Seite Licht und Szene)
+		void OcclusionSettings()
 		{
-			MenuApi::TextWrapped("%s", T("Beta features work, but have not been tested on many setups yet. All are off by default. Please report what you notice on Nexus, ideally with SPS.log.",
-											"Beta-Funktionen funktionieren, sind aber noch auf wenigen Systemen erprobt. Alle sind standardmäßig aus. Auffälligkeiten bitte auf Nexus melden, am besten mit SPS.log."));
-			MenuApi::SeparatorText(T("Hide occluded objects (BETA)", "Verdeckte Objekte weglassen (BETA)"));
+			MenuApi::SeparatorText(T("Hide occluded objects", "Verdeckte Objekte weglassen"));
+			// Bottled-HiZ aktiv: Schalter ausgegraut statt scheinbar an (Nexus jimb111, 1.0.71) - die Einstellung bleibt, damit
+			// SPS von selbst wieder weglaesst, sobald Bottleds HiZ aus ist
+			const bool occBlocked = Occlusion::BottledHiZActive() && !Config::occlAllowWithBottled.load();
+			if (occBlocked) {
+				MenuApi::TextWrapped("%s", T("Paused: Bottled Shaders HiZ Occlusion Culling is active and already hides occluded objects (both would test every object). SPS hides again by itself once it is off in Bottled Shaders.",
+												"Pausiert: Die HiZ-Verdeckung von Bottled Shaders ist aktiv und lässt verdeckte Objekte bereits weg (beide würden jedes Objekt prüfen). SPS lässt von selbst wieder weg, sobald sie in Bottled Shaders aus ist."));
+			}
+			MenuApi::BeginDisabled(occBlocked);
 			AtomicToggle(T("Enabled##occ", "Aktiv##occ"), Config::occlusionCull,
-				T("Objects in the main view that are completely hidden behind walls, houses or terrain are not drawn. A small depth image of the previous frame decides what is hidden. Shadows, reflections and water are never affected. Pauses while the camera turns or moves fast. Saves draw calls in cities, the effect on FPS depends on your setup. Watch for objects popping in. Default OFF.",
-					"Objekte im Hauptbild, die ganz hinter Mauern, Häusern oder Gelände verdeckt sind, werden nicht gezeichnet. Ein kleines Tiefenbild des vorigen Bildes entscheidet, was verdeckt ist. Schatten, Spiegelungen und Wasser sind nie betroffen. Pausiert, wenn sich die Kamera schnell dreht oder bewegt. Spart Draw Calls in Städten, wie viel FPS das bringt, hängt vom System ab. Auf aufploppende Objekte achten. Standard AUS."));
+				T("Objects in the main view that are completely hidden behind walls, houses or terrain are not drawn. A small depth image of the previous frame, moved to the current view, decides what is hidden. Shadows, reflections and water are never affected. Saves draw calls in cities, the effect on FPS depends on your setup. Switch off if objects pop in. Default ON.",
+					"Objekte im Hauptbild, die ganz hinter Mauern, Häusern oder Gelände verdeckt sind, werden nicht gezeichnet. Ein kleines Tiefenbild des vorigen Bildes, umgerechnet auf den aktuellen Blick, entscheidet, was verdeckt ist. Schatten, Spiegelungen und Wasser sind nie betroffen. Spart Draw Calls in Städten, wie viel FPS das bringt, hängt vom System ab. Ausschalten, falls Objekte aufploppen. Standard AN."));
+			MenuApi::EndDisabled();
+			if (Occlusion::BottledHiZActive()) {
+				AtomicToggle(T("Hide with Bottled Shaders HiZ anyway##occ", "Trotz Bottled-Shaders-HiZ weglassen##occ"), Config::occlAllowWithBottled,
+					T("Only for comparisons. Default off.", "Nur für Vergleiche. Standard aus."));
+			}
+			AtomicToggle(T("Follow the camera##occ", "Der Kamera folgen##occ"), Config::occlReproject,
+				T("The depth image is moved to the current view on a helper thread, so objects are also hidden while turning and walking. Off = old way (pauses while the camera moves, see the pause settings). Default on.",
+					"Das Tiefenbild wird in einem Hilfsthread auf den aktuellen Blick umgerechnet, so wird auch beim Drehen und Laufen weggelassen. Aus = alter Weg (pausiert, solange sich die Kamera bewegt, siehe Pause-Einstellungen). Standard an."));
 			MenuApi::TextWrapped("%s", T("Fine-tuning (only change if you know why):", "Feineinstellung (nur ändern, wenn du weißt warum):"));
 			{
 				const auto tune = [](const char* a_label, std::atomic<float>& a_v, float a_min, float a_max, const char* a_fmt, const char* a_tip) {
@@ -450,10 +485,10 @@ namespace Menu
 					Tip(a_tip);
 				};
 				tune(T("Pause from camera turn##occ", "Pause ab Kameradrehung##occ"), Config::occlTurnDeg, 0.5f, 20.0f, "%.1f°",
-					T("Hiding pauses while the camera has turned more than this since the depth image. Higher = hides more often, but objects may pop in when turning fast. Default 2.",
-						"Weglassen pausiert, solange sich die Kamera seit dem Tiefenbild weiter gedreht hat. Höher = öfter weglassen, beim schnellen Drehen können aber Objekte aufploppen. Standard 2."));
+					T("Only with Follow the camera off. Hiding pauses while the camera has turned more than this since the depth image. Higher = hides more often, but objects may pop in when turning fast. Default 2.",
+						"Nur mit Der Kamera folgen aus. Weglassen pausiert, solange sich die Kamera seit dem Tiefenbild weiter gedreht hat. Höher = öfter weglassen, beim schnellen Drehen können aber Objekte aufploppen. Standard 2."));
 				tune(T("Pause from movement##occ", "Pause ab Bewegung##occ"), Config::occlMoveUnits, 0.0f, 512.0f, "%.0f",
-					T("Same for moving (game units, 64 = about 1 m). Default 64.", "Dasselbe für Bewegung (Spieleinheiten, 64 = etwa 1 m). Standard 64."));
+					T("Only with Follow the camera off. Same for moving (game units, 64 = about 1 m). Default 64.", "Nur mit Der Kamera folgen aus. Dasselbe für Bewegung (Spieleinheiten, 64 = etwa 1 m). Standard 64."));
 				tune(T("Safety margin %##occ", "Sicherheitsabstand %##occ"), Config::occlMarginPct, 0.0f, 20.0f, "%.1f %%",
 					T("An object only counts as hidden if it is this much farther away than what covers it. Default 2.", "Ein Objekt gilt nur als verdeckt, wenn es um so viel weiter weg ist als das, was davor liegt. Standard 2."));
 				tune(T("Safety margin units##occ", "Sicherheitsabstand Einheiten##occ"), Config::occlMarginUnits, 0.0f, 256.0f, "%.0f",
@@ -462,8 +497,8 @@ namespace Menu
 					T("How many depth images in a row an object must be hidden before it is left out. 1 = immediately. Default 2.",
 						"In so vielen Tiefenbildern hintereinander muss ein Objekt verdeckt sein, bevor es weggelassen wird. 1 = sofort. Standard 2."));
 				tuneInt(T("Max. size on screen (tiles)##occ", "Max. Größe im Bild (Kacheln)##occ"), Config::occlMaxTiles, 256.0f, 36864.0f, "%.0f",
-					T("Larger objects are not checked (the whole image has 36864 tiles). Higher = big objects like houses can be left out too, the check costs a bit more. Default 4096.",
-						"Größere Objekte werden nicht geprüft (das ganze Bild hat 36864 Kacheln). Höher = auch große Objekte wie Häuser können wegfallen, die Prüfung kostet etwas mehr. Standard 4096."));
+					T("Only with Follow the camera off (otherwise every size is checked cheaply). Larger objects are not checked (the whole image has 36864 tiles). Higher = big objects like houses can be left out too, the check costs a bit more. Default 4096.",
+						"Nur mit Der Kamera folgen aus (sonst wird jede Größe günstig geprüft). Größere Objekte werden nicht geprüft (das ganze Bild hat 36864 Kacheln). Höher = auch große Objekte wie Häuser können wegfallen, die Prüfung kostet etwas mehr. Standard 4096."));
 				AtomicToggle(T("Hide at draw time##occ", "Erst beim Zeichnen weglassen##occ"), Config::occlDrawFilter,
 					T("Hidden objects are set up by the game as usual and only their draws are skipped. Off = old way (not drawn at all), only for comparison. Not saved.",
 						"Verdeckte Objekte werden vom Spiel normal angemeldet, nur ihre Draws fallen weg. Aus = alter Weg (gar nicht angemeldet), nur zum Vergleich. Wird nicht gespeichert."),
@@ -479,6 +514,7 @@ namespace Menu
 					Config::occlStreak.store(2);
 					Config::occlMaxTiles.store(4096);
 					Config::occlSkipSkinned.store(true);
+					Config::occlReproject.store(true);
 					Config::MarkDirty();
 				}
 			}
@@ -505,9 +541,20 @@ namespace Menu
 			RuleControls("point", Config::pointLightCulling, 5000.0f);
 
 			MenuApi::SeparatorText(T("Shadow cache for static lights", "Schatten fester Lichter zwischenspeichern"));
+			const bool lcacheBlocked = Occlusion::BottledBlocksLightCache();
+			if (lcacheBlocked) {
+				MenuApi::TextWrapped("%s", T("Paused: Bottled Shaders is installed, with it shadows in interiors flickered. Allow it below to use both.",
+												"Pausiert: Bottled Shaders ist installiert, damit flackerten Schatten in Innenräumen. Unten erlauben, um beide zu nutzen."));
+			}
+			MenuApi::BeginDisabled(lcacheBlocked);
 			Toggle(T("Enabled##lcache", "Aktiv##lcache"), Config::lightShadowCache.enabled,
 				T("Shadow maps of lights that do not move (wall lamps, fireplaces) are kept: only characters, moving objects and trees in the wind are drawn again each frame. Lights that drift or change their radius are rebuilt. Mainly for interiors with many lights. Switch off if shadows near fires pulse.",
 					"Schattenkarten von Lichtern, die sich nicht bewegen (Wandleuchter, Kamine), werden aufbewahrt: Jeden Frame werden nur Figuren, Bewegliches und Bäume im Wind neu gezeichnet. Lichter, die wandern oder ihren Radius ändern, werden neu aufgebaut. Vor allem für Innenräume mit vielen Lichtern. Ausschalten, falls Schatten an Feuern pulsieren."));
+			MenuApi::EndDisabled();
+			if (Occlusion::BottledInstalled()) {
+				Toggle(T("Use with Bottled Shaders anyway##lcache", "Trotz Bottled Shaders verwenden##lcache"), Config::lightShadowCache.allowWithBottled,
+					T("Only if shadows near lights do not flicker in interiors. Default off.", "Nur, wenn Schatten an Lichtern in Innenräumen nicht flackern. Standard aus."));
+			}
 
 			MenuApi::SeparatorText(T("Character shadow culling", "Figurenschatten in der Ferne weglassen"));
 			Toggle(T("Enabled##actor", "Aktiv##actor"), Config::actorShadowCulling.enabled,
@@ -518,7 +565,7 @@ namespace Menu
 			Toggle(T("Also torch shadows##actor", "Auch Fackelschatten##actor"), Config::actorShadowCulling.pointLights,
 				T("Also leave out character shadows cast by torches and fires.", "Auch Figurenschatten von Fackeln und Feuern weglassen."));
 
-			MenuApi::SeparatorText(T("Shadow instancing (BETA)", "Gleiche Schatten bündeln (BETA)"));
+			MenuApi::SeparatorText(T("Shadow instancing (optional)", "Gleiche Schatten bündeln (optional)"));
 			Toggle(T("Enabled##inst", "Aktiv##inst"), Config::shadowInstancing.enabled,
 				T("Draws identical simple meshes in sun shadows with one draw call. Small gain, off by default. Takes effect after restarting the game. Switch off again if shadows or meshes flicker.", "Zeichnet gleiche einfache Objekte im Sonnenschatten in einem Durchgang. Kleiner Gewinn, standardmäßig aus. Wirkt erst nach einem Neustart des Spiels. Bei flackernden Schatten oder Objekten wieder ausschalten."));
 		}
@@ -569,9 +616,24 @@ namespace Menu
 					MenuApi::Text(T("VRAM: %.1f of %.1f GB (%.0f %%)", "VRAM: %.1f von %.1f GB (%.0f %%)"), usage / 1073741824.0, budget / 1073741824.0, 100.0 * usage / budget);
 				}
 			}
-			Toggle(T("Only when VRAM gets full##ts", "Nur wenn der VRAM knapp wird##ts"), Config::textureStream.budgetMode,
-				T("Textures are only shrunk when less than the reserve below of the video memory Windows grants the game is free. With enough VRAM nothing happens and nothing is spent.",
-					"Texturen werden nur verkleinert, wenn vom Grafikspeicher, den Windows dem Spiel zuteilt, weniger als der Puffer unten frei ist. Mit genug VRAM passiert nichts und es kostet nichts."));
+			{
+				// Modus als Auswahl statt Schalter: welche Regler gelten, haengt davon ab (Review 1.0.69)
+				const char* modes[] = { T("Always, by distance", "Immer, nach Entfernung"), T("Only when VRAM gets full", "Nur wenn der VRAM knapp wird") };
+				int         mode = Config::textureStream.budgetMode ? 1 : 0;
+				if (MenuApi::HasCombo()) {
+					if (MenuApi::Combo(T("Mode##ts", "Modus##ts"), &mode, modes, 2)) {
+						Config::textureStream.budgetMode = mode == 1;
+						Config::MarkDirty();
+					}
+				} else {
+					Toggle(T("Only when VRAM gets full##ts", "Nur wenn der VRAM knapp wird##ts"), Config::textureStream.budgetMode, "");
+				}
+				Tip(T("Always: textures of far objects are shrunk as soon as they are far enough away. Only when VRAM gets full: nothing happens until less than 'Keep free' of the video memory Windows grants the game is free. With enough VRAM nothing is spent.",
+					"Immer: Texturen ferner Objekte werden verkleinert, sobald sie weit genug weg sind. Nur wenn der VRAM knapp wird: nichts passiert, bis vom Grafikspeicher, den Windows dem Spiel zuteilt, weniger als 'Frei halten' frei ist. Mit genug VRAM kostet es nichts."));
+			}
+
+			MenuApi::SeparatorText(T("VRAM reserve (only when VRAM gets full)", "VRAM-Puffer (nur wenn der VRAM knapp wird)"));
+			MenuApi::BeginDisabled(!Config::textureStream.budgetMode);
 			{
 				// feste 256-MB-Stufen (Regler ueber den Index - frei gezogen landeten Zwischenwerte im Regler)
 				int  step = std::clamp(static_cast<int>(std::lround(Config::textureStream.reserveMB / 256.0f)), 1, 24);
@@ -598,6 +660,7 @@ namespace Menu
 			Toggle(T("Refill VRAM when there is room##ts", "VRAM wieder auffüllen, wenn Platz ist##ts"), Config::textureStream.refill,
 				T("When clearly more than the reserve is free, downscaled textures are reloaded at full size again (most needed first).",
 					"Ist deutlich mehr als der Puffer frei, werden verkleinerte Texturen wieder voll geladen (die meistgebrauchten zuerst)."));
+			MenuApi::BeginDisabled(!Config::textureStream.refill);
 			{
 				int  step = std::clamp(static_cast<int>(std::lround(Config::textureStream.refillGapMB / 256.0f)), 1, 16);
 				const auto text = std::format("{} MB", step * 256);
@@ -619,6 +682,10 @@ namespace Menu
 				}
 				MenuApi::TextWrapped("%s", T("Most users only need 'Keep free'. Leave the gap at its default.", "Die meisten brauchen nur 'Frei halten'. Den Abstand am besten auf Standard lassen."));
 			}
+			MenuApi::EndDisabled();
+			MenuApi::EndDisabled();
+
+			MenuApi::SeparatorText(T("Quality and loading", "Qualität und Laden"));
 			Slider(T("RAM buffer (MB)##ts", "RAM-Puffer (MB)##ts"), Config::textureStream.ramCacheMB, 0.0f, 8192.0f, "%.0f",
 				T("Texture data that was reloaded stays in RAM up to this size, so the next reload needs no disk access. Least recently used is dropped first. 0 = off.",
 					"Neu geladene Texturdaten bleiben bis zu dieser Größe im RAM, das nächste Neuladen braucht dann keinen Plattenzugriff. Am längsten nicht gebrauchte fliegen zuerst raus. 0 = aus."));
@@ -646,6 +713,16 @@ namespace Menu
 				Tip(T("Textures are never shrunk below this edge length. Higher = safer, less saving.",
 					"Texturen werden nie unter diese Kantenlänge verkleinert. Höher = sicherer, weniger Ersparnis."));
 			}
+			MenuApi::SeparatorText(T("Characters", "Figuren"));
+			Toggle(T("Also clothing and armor of characters (optional)##ts", "Auch Kleidung und Rüstung von Figuren (optional)##ts"), Config::textureStream.streamClothing,
+				T("Clothing and armor worn by NPCs far away are shrunk as well. Distance is taken from the character itself, so sitting or animated NPCs are measured correctly. Off by default. With some armor and clothing mods textures can turn black, purple or blurry until you come close. Whether it works depends on your installed mods, so if it looks wrong, turn this off.",
+					"Kleidung und Rüstung weit entfernter NPCs werden ebenfalls verkleinert. Der Abstand wird an der Figur selbst gemessen, damit auch sitzende oder animierte NPCs richtig erfasst werden. Standard AUS. Bei manchen Rüstungs- und Kleidungsmods können Texturen schwarz, lila oder unscharf werden, bis man näher kommt. Ob es funktioniert, hängt von den installierten Mods ab. Sieht es falsch aus, bitte ausschalten."));
+			Toggle(T("Also bodies, faces and hair (optional)##ts", "Auch Körper, Gesichter und Haare (optional)##ts"), Config::textureStream.streamCharacters,
+				T("Body, face and hair textures (textures/actors/character) of far characters are shrunk as well. Whether it works depends on your installed body, face and hair mods. If faces or hair look wrong (black, purple, blurry), turn this off.",
+					"Körper-, Gesichts- und Haartexturen (textures/actors/character) ferner Figuren werden ebenfalls verkleinert. Ob es funktioniert, hängt von den installierten Körper-, Gesichts- und Haarmods ab. Sehen Gesichter oder Haare falsch aus (schwarz, lila, unscharf), bitte ausschalten."));
+
+			// eigener Block: gilt unabhaengig vom Modus und von der Entfernung (Review 1.0.69)
+			MenuApi::SeparatorText(T("Upper limit (always applies)", "Obergrenze (gilt immer)"));
 			{
 				// Obergrenze: 1K / 2K / 4K / 8K / keine (Regler ueber den Index, Anzeige als Text)
 				static constexpr float kCaps[] = { 1024.0f, 2048.0f, 4096.0f, 8192.0f, 0.0f };
@@ -661,32 +738,27 @@ namespace Menu
 					Config::textureStream.maxEdge = kCaps[std::clamp(static_cast<int>(std::lround(v)), 0, 4)];
 					Config::MarkDirty();
 				}
-				Tip(T("Upper limit for all streamed textures, near ones too, independent of VRAM usage. Applied right away and when textures load. Excluded paths and the character switches below still apply.",
-					"Obergrenze für alle gestreamten Texturen, auch nahe, unabhängig von der VRAM-Belegung. Wirkt sofort und beim Laden. Ausgenommene Pfade und die Figuren-Schalter unten gelten weiter."));
+				Tip(T("Upper limit for all streamed textures, near ones too, independent of VRAM usage. Applied right away and when textures load. Excluded paths and the character switches above still apply.",
+					"Obergrenze für alle gestreamten Texturen, auch nahe, unabhängig von der VRAM-Belegung. Wirkt sofort und beim Laden. Ausgenommene Pfade und die Figuren-Schalter oben gelten weiter."));
 			}
-			Toggle(T("Also clothing and armor of characters (BETA)##ts", "Auch Kleidung und Rüstung von Figuren (BETA)##ts"), Config::textureStream.streamClothing,
-				T("Clothing and armor worn by NPCs far away are shrunk as well. Distance is taken from the character itself, so sitting or animated NPCs are measured correctly. Off by default. With some armor and clothing mods textures can turn black, purple or blurry until you come close. Whether it works depends on your installed mods, so if it looks wrong, turn this off.",
-					"Kleidung und Rüstung weit entfernter NPCs werden ebenfalls verkleinert. Der Abstand wird an der Figur selbst gemessen, damit auch sitzende oder animierte NPCs richtig erfasst werden. Standard AUS. Bei manchen Rüstungs- und Kleidungsmods können Texturen schwarz, lila oder unscharf werden, bis man näher kommt. Ob es funktioniert, hängt von den installierten Mods ab. Sieht es falsch aus, bitte ausschalten."));
-			Toggle(T("Also bodies, faces and hair (BETA)##ts", "Auch Körper, Gesichter und Haare (BETA)##ts"), Config::textureStream.streamCharacters,
-				T("Body, face and hair textures (textures/actors/character) of far characters are shrunk as well. Whether it works depends on your installed body, face and hair mods. If faces or hair look wrong (black, purple, blurry), turn this off.",
-					"Körper-, Gesichts- und Haartexturen (textures/actors/character) ferner Figuren werden ebenfalls verkleinert. Ob es funktioniert, hängt von den installierten Körper-, Gesichts- und Haarmods ab. Sehen Gesichter oder Haare falsch aus (schwarz, lila, unscharf), bitte ausschalten."));
 
-			MenuApi::SeparatorText(T("Also include excluded types", "Ausgenommene Arten mit einbeziehen"));
-			MenuApi::TextWrapped("%s", T("These texture types are normally never downscaled. Tick one to see live how it behaves, best together with a low max. texture size (1K). Untick and they go back to full size.",
-											"Diese Texturarten werden normalerweise nie verkleinert. Häkchen setzen, um live zu sehen, wie sie sich verhalten, am besten zusammen mit einer kleinen max. Texturgröße (1K). Häkchen weg, dann kommen sie wieder in voller Größe."));
-			DebugInclude(T("Distant terrain and LOD##dbg", "Ferne Landschaft und LOD##dbg"), TextureStream::kIncludeLod,
+
+			MenuApi::SeparatorText(T("Advanced: also include excluded types", "Erweitert: ausgenommene Arten mit einbeziehen"));
+			MenuApi::TextWrapped("%s", T("These texture types are normally never downscaled, for good reasons: book text can become hard to read, distant mountains and terrain coarser. Tick a type if it looks fine for you. Untick and they go back to full size. Saved.",
+											"Diese Texturarten werden normalerweise nie verkleinert, aus gutem Grund: Schrift in Büchern kann schwer lesbar werden, ferne Berge und Landschaft gröber. Häkchen setzen, wenn es bei dir gut aussieht. Häkchen weg, dann kommen sie wieder in voller Größe. Wird gespeichert."));
+			DebugInclude(T("Distant terrain and LOD##ts", "Ferne Landschaft und LOD##ts"), TextureStream::kIncludeLod,
 				T("Paths with \\lod\\ or terrain\\. Distant ground, mountains and simplified objects far away.",
 					"Pfade mit \\lod\\ oder terrain\\. Ferner Boden, Berge und vereinfachte Objekte in der Ferne."));
-			DebugInclude(T("Effects##dbg", "Effekte##dbg"), TextureStream::kIncludeEffects,
+			DebugInclude(T("Effects##ts", "Effekte##ts"), TextureStream::kIncludeEffects,
 				T("textures\\effects\\. Fire, magic, glow, smoke. Effects drawn with the effect shader are not covered at all.",
 					"textures\\effects\\. Feuer, Magie, Leuchten, Rauch. Effekte mit eigenem Effekt-Shader werden gar nicht erfasst."));
-			DebugInclude(T("Books##dbg", "Bücher##dbg"), TextureStream::kIncludeBooks,
+			DebugInclude(T("Books##ts", "Bücher##ts"), TextureStream::kIncludeBooks,
 				T("Every path containing 'book', also bookshelves. Excluded so text stays readable.",
 					"Alle Pfade mit 'book', auch Bücherregale. Ausgenommen, damit Schrift lesbar bleibt."));
-			DebugInclude(T("Sky##dbg", "Himmel##dbg"), TextureStream::kIncludeSky,
+			DebugInclude(T("Sky##ts", "Himmel##ts"), TextureStream::kIncludeSky,
 				T("Paths with \\sky\\. Clouds, moons, stars - most use their own shader and are not covered.",
 					"Pfade mit \\sky\\. Wolken, Monde, Sterne - die meisten haben einen eigenen Shader und werden nicht erfasst."));
-			DebugInclude(T("Reflections (cubemaps)##dbg", "Reflexionen (Cubemaps)##dbg"), TextureStream::kIncludeCubemaps,
+			DebugInclude(T("Reflections (cubemaps)##ts", "Reflexionen (Cubemaps)##ts"), TextureStream::kIncludeCubemaps,
 				T("cubemaps\\. Real cube maps can never be downscaled, only flat textures in this folder.",
 					"cubemaps\\. Echte Würfelkarten lassen sich nie verkleinern, nur flache Texturen in diesem Ordner."));
 			MenuApi::TextWrapped("%s", T("Not possible at all: grass, water and effect shader textures (other shaders), textures without mipmaps.",
@@ -702,6 +774,8 @@ namespace Menu
 				T("Small objects are left out of the skylighting occlusion map.", "Kleine Objekte werden in der Himmelslicht-Karte weggelassen."));
 			Slider(T("Min. object radius##sky", "Min. Objektradius##sky"), Config::skylightingCulling.minRadius, 32.0f, 512.0f, "%.0f",
 				T("Objects smaller than this are left out.", "Kleinere Objekte werden weggelassen."));
+
+			OcclusionSettings();
 
 			MenuApi::SeparatorText(T("Decal culling", "Ferne Bodendetails weglassen"));
 			Toggle(T("Enabled##decal", "Aktiv##decal"), Config::decalCulling.enabled,
@@ -760,8 +834,10 @@ namespace Menu
 				T("Lights and scene > Skylighting culling", "Licht und Szene > Himmelslicht: kleine Objekte weglassen"));
 			HelpEntry(T("Characters walking past a torch are lit a moment late", "An einer Fackel vorbeilaufende Figuren werden einen Moment zu spät beleuchtet"),
 				T("Lights and scene > Light assignment throttle (or lower 'Max. age')", "Licht und Szene > Licht-Zuordnung drosseln (oder 'Max. Alter' senken)"));
-			HelpEntry(T("Whole objects disappear, or tiny objects pop in", "Ganze Objekte verschwinden, oder winzige Objekte ploppen auf"),
-				T("Overview > Beta: Main view micro culling or Hide occluded objects (off by default)", "Übersicht > Beta: Winzige Objekte im Bild weglassen oder Verdeckte Objekte weglassen (standardmäßig aus)"));
+			HelpEntry(T("Whole objects disappear for a moment or pop in", "Ganze Objekte fehlen kurz oder ploppen auf"),
+				T("Lights and scene > Hide occluded objects", "Licht und Szene > Verdeckte Objekte weglassen"));
+			HelpEntry(T("Tiny far objects pop in", "Winzige ferne Objekte ploppen auf"),
+				T("Overview > Optional: Main view micro culling (off by default)", "Übersicht > Optional: Winzige Objekte im Bild weglassen (standardmäßig aus)"));
 
 			MenuApi::SeparatorText(T("Reporting a bug", "Fehler melden"));
 			MenuApi::TextWrapped("%s", T("Please attach SPS.log (Documents\\My Games\\Skyrim Special Edition\\SKSE) and say where it happened and which switch makes it go away.",
@@ -789,8 +865,7 @@ namespace Menu
 		MenuApi::AddSectionItem(kSection + T("Texture streaming", "Textur-Streaming"), RenderTextures);
 		MenuApi::AddSectionItem(kSection + T("Lights and scene", "Licht und Szene"), RenderScene);
 		MenuApi::AddSectionItem(kSection + T("Help with visual issues", "Hilfe bei Bildfehlern"), RenderHelp);
-		MenuApi::AddSectionItem(kSection + T("Beta", "Beta"), RenderBeta);
-		MenuApi::AddSectionItem(kSection + T("Debug", "Debug"), RenderDebug);
+		MenuApi::AddSectionItem(kSection + "Debug", RenderDebug);
 		logger::info("Menu registered in SKSE Menu Framework (version {:.1f})", MenuApi::Version());
 	}
 }

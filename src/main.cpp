@@ -6,6 +6,7 @@
 #include "LightShadowCache.h"
 #include "Localization.h"
 #include "Menu.h"
+#include "Occlusion.h"
 #include "Config.h"
 #include "Features.h"
 #include "ShadowCulling.h"
@@ -37,6 +38,7 @@ namespace
 			Hooks::RegisterEvents();
 #ifndef SPS_VR
 			ShadowCulling::InstallLate();
+			Occlusion::DetectOtherCullers();
 #endif
 			if (Config::engineProbes) {
 				EngineTimers::Install();  // nur Zeitmessung; nach Community Shaders (Detours verkettet sich dahinter)
